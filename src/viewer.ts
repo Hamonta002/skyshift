@@ -3,6 +3,7 @@ declare const ASSETS: {
   wasm: string;
   worker: string;
   toolchain: string;
+  examples: string[];
 };
 
 (() => {
@@ -75,6 +76,11 @@ declare const ASSETS: {
   let pointerAt: [number, number] | null = null;
   let selected: { ra: number; dec: number } | null = null;
   let zoomAnimation = 0;
+  let zoomGoal: number | null = null; // target level of a running zoom animation
+  function stopZoomAnimation(): void {
+    cancelAnimationFrame(zoomAnimation);
+    zoomGoal = null;
+  }
 
   const params = new URLSearchParams(location.search);
   const requestedEngine = params.get("engine");
@@ -535,7 +541,7 @@ declare const ASSETS: {
     return SkyShift.clampZoom(Math.min(SkyShift.MAP_DEFAULT_ZOOM, Math.floor(Math.log2(Math.max(room, 1) / fieldSide()))));
   }
   function frameField(z = fitLevel()): void {
-    cancelAnimationFrame(zoomAnimation);
+    stopZoomAnimation();
     const k = SkyShift.pxPerArcsec(z, fixture.scale);
     const [vx, vy] = visibleCentre();
     camera = SkyShift.panBy({ ra: fixture.ra0, dec: fixture.dec0, z }, vx - screen.width / 2, vy - screen.height / 2, k);
@@ -546,21 +552,29 @@ declare const ASSETS: {
     const [vx, vy] = visibleCentre();
     const x = (ax ?? vx) - screen.width / 2, y = (ay ?? vy) - screen.height / 2;
     const start = camera, target = SkyShift.clampZoom(z);
-    cancelAnimationFrame(zoomAnimation);
+    stopZoomAnimation();
     if (reducedMotion.matches || Math.abs(target - start.z) < 0.01) {
       setCamera(SkyShift.zoomAt(start, target, x, y, fixture.scale));
       return;
     }
-    const began = performance.now();
+    zoomGoal = target;
+    // The clock starts on the first frame: a frame timestamp can precede the
+    // request, and a negative progress would ease the zoom the wrong way.
+    let began: number | undefined;
     const stepZoom = (now: number) => {
-      const t = Math.min(1, (now - began) / 180), eased = 1 - (1 - t) ** 3;
-      setCamera(SkyShift.zoomAt(start, start.z + (target - start.z) * eased, x, y, fixture.scale));
+      began ??= now;
+      const t = Math.max(0, Math.min(1, (now - began) / 180)), eased = 1 - (1 - t) ** 3;
+      setCamera(SkyShift.zoomAt(start, t === 1 ? target : start.z + (target - start.z) * eased, x, y, fixture.scale));
       if (t < 1) zoomAnimation = requestAnimationFrame(stepZoom);
+      else zoomGoal = null;
     };
     zoomAnimation = requestAnimationFrame(stepZoom);
   }
+  /** One whole level per press; quick presses stack on the pending target. */
   function zoomStep(delta: number): void {
-    zoomTo(Math.round(camera.z) === camera.z ? camera.z + delta : delta > 0 ? Math.ceil(camera.z) : Math.floor(camera.z));
+    const base = zoomGoal ?? camera.z;
+    const level = Math.round(base);
+    zoomTo(Math.abs(base - level) < 1e-6 ? level + delta : delta > 0 ? Math.ceil(base) : Math.floor(base));
   }
 
   const searchAreaPill = get<HTMLButtonElement>("search-area");
@@ -623,7 +637,7 @@ declare const ASSETS: {
     mapCanvas.setPointerCapture(event.pointerId);
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     closePopovers();
-    cancelAnimationFrame(zoomAnimation);
+    stopZoomAnimation();
     if (pointers.size === 1) gesture = { startX: event.clientX, startY: event.clientY, moved: false, grab: toSky(event.clientX, event.clientY) };
     else if (pointers.size === 2) {
       const state = pinchState(), sky = toSky(state.midX, state.midY);
@@ -667,14 +681,14 @@ declare const ASSETS: {
     event.preventDefault();
     const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? screen.height : 1;
     const z = camera.z - event.deltaY * unit * (event.ctrlKey ? 0.01 : 0.004);
-    cancelAnimationFrame(zoomAnimation);
+    stopZoomAnimation();
     setCamera(SkyShift.zoomAt(camera, z, event.clientX - screen.width / 2, event.clientY - screen.height / 2, fixture.scale));
   }, { passive: false });
   function handleTap(x: number, y: number, shift: boolean, mouse: boolean): void {
     const now = performance.now();
     if (now - lastTap.time < 320 && Math.hypot(x - lastTap.x, y - lastTap.y) < 24) {
       lastTap.time = 0;
-      zoomTo(camera.z + (shift ? -1 : 1), x, y);
+      zoomTo((zoomGoal ?? camera.z) + (shift ? -1 : 1), x, y);
       return;
     }
     lastTap = { time: now, x, y };
@@ -1239,7 +1253,7 @@ declare const ASSETS: {
       item.setAttribute("aria-selected", String(index === activeSuggestion));
       const name = document.createElement("span"); name.className = "s-name"; name.textContent = target.label;
       const tag = document.createElement("span"); tag.className = "s-tag";
-      tag.textContent = target.id === "wise0855" ? "Bundled" : "Example";
+      tag.textContent = target.id === "wise0855" || ASSETS.examples.includes(target.id) ? "Bundled" : "Live search";
       const coords = document.createElement("span"); coords.className = "s-coords";
       coords.textContent = `${SkyShift.formatRa(target.ra, 0.1)} ${SkyShift.formatDec(target.dec, 1)} · band ${target.band}`;
       item.append(name, tag, coords);
@@ -1323,6 +1337,7 @@ declare const ASSETS: {
     currentTargetId = targetId;
     for (const chip of chips.querySelectorAll<HTMLButtonElement>("button")) chip.setAttribute("aria-pressed", String(chip.dataset.target === targetId));
     bandSelect.value = String(band);
+    if (targetId !== "wise0855") hint.hidden = true;
   }
 
   let loadedFrameMode = modeSelect.value === "exposures" ? "exposures" : "visits";
@@ -1485,7 +1500,7 @@ declare const ASSETS: {
       return;
     }
     let bundle: { fixture: SkyShift.PackedFixture } | undefined;
-    try {
+    if (ASSETS.examples.includes(target.id)) try {
       const response = await fetch(`examples/${target.id}.json`);
       if (response.ok) bundle = await response.json();
       else if (response.status !== 404) throw new Error("Could not load the example bundle.");

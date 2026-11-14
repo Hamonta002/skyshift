@@ -138,11 +138,16 @@ try {
   const compute = assemble(sources.slice(0, 2));
   const worker = assemble(sources.slice(0, 3)) + "\nSkyShift.installWorker(self);";
   const viewer = assemble(sources);
+  const exampleSource = join(root, "reference/fixtures/examples");
+  // Examples bundled in this build; the viewer fetches only these and goes
+  // straight to the live search for the rest (no 404 probes).
+  const bundledExamples = ["barnard", "epsindiB", "rwaur", "rdra"].filter((id) => existsSync(join(exampleSource, id + ".json")));
   const assets = {
     fixture: data,
     wasm: bytes.toString("base64"),
     worker,
     toolchain: kernel.toolchain,
+    examples: bundledExamples,
   };
   const html = read("src/index.html")
     .replace("/* BUILD_CSS */", () => read("src/style.css"))
@@ -155,15 +160,11 @@ try {
   writeFileSync(join(out, "worker.cjs"), assemble(sources.slice(0, 3)) + "\nmodule.exports = SkyShift;\n");
   writeFileSync(join(out, "archive.cjs"), assemble(["science", "coordinates", "archive", "spectrum", "catalogue", "map"]) + "\nmodule.exports = SkyShift;\n");
   writeFileSync(join(out, "fixture.json"), JSON.stringify(data));
-  const exampleSource = join(root, "reference/fixtures/examples");
   const exampleOutput = join(out, "examples");
   rmSync(exampleOutput, { recursive: true, force: true });
-  if (existsSync(exampleSource)) {
+  if (bundledExamples.length) {
     mkdirSync(exampleOutput, { recursive: true });
-    for (const id of ["barnard", "epsindiB", "rwaur", "rdra"]) {
-      const source = join(exampleSource, id + ".json");
-      if (existsSync(source)) copyFileSync(source, join(exampleOutput, id + ".json"));
-    }
+    for (const id of bundledExamples) copyFileSync(join(exampleSource, id + ".json"), join(exampleOutput, id + ".json"));
   }
   writeFileSync(join(out, "wise0855_d6.manifest.json"), read("reference/fixtures/wise0855_d6.manifest.json"));
   writeFileSync(join(out, "build.json"), JSON.stringify({
