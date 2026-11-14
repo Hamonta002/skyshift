@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101318">
+  <meta name="description" content="Compare real SPHEREx observations of WISE 0855 and time two browser processing engines.">
+  <title>SkyShift · SPHEREx comparison</title>
+  <style>/* BUILD_CSS */</style>
+</head>
+<body>
+  <header class="page-header">
+    <a class="brand" href="./" aria-label="SkyShift home"><span class="brand-mark" aria-hidden="true"></span>SkyShift</a>
+    <span class="mission">SPHEREx observation viewer</span>
+    <div class="header-actions">
+      <label class="sr-only" for="example">Examples</label>
+      <select id="example"><option value="">Examples</option><option value="wise0855">WISE 0855</option><option value="barnard">Barnard’s Star</option><option value="epsindiB">Epsilon Indi B</option><option value="rwaur">RW Aurigae</option><option value="rdra">R Draconis</option></select>
+      <button id="search-toggle" type="button" aria-expanded="false" aria-controls="search">Search sky</button>
+      <button id="share" type="button">Share</button>
+    </div>
+    <form id="search" class="search-form" hidden>
+      <label>Right ascension <input id="ra" value="133.759765" required aria-label="Right ascension in degrees or hours"></label>
+      <label>Declination <input id="dec" value="-7.242186" required aria-label="Declination in degrees"></label>
+      <label>Band <select id="band"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option selected>6</option></select></label>
+      <label>Field <select id="fov"><option value="5">5′</option><option value="10">10′</option><option value="20">20′</option></select></label>
+      <label>From (UTC) <input id="date-from" type="date"></label>
+      <label>Through (UTC) <input id="date-to" type="date"></label>
+      <button class="primary" type="submit">Load field</button>
+    </form>
+  </header>
+  <main>
+    <section class="viewer" aria-labelledby="target">
+      <figure class="sky-workspace">
+        <div class="field-header">
+          <span class="field-survey">SPHEREx / infrared</span>
+          <h1 id="target">WISE 0855</h1>
+          <p class="coordinates" id="coordinates">RA 133.759765° · Dec −7.242186° · 4.42–5.00 μm · 2.1′ field</p>
+        </div>
+        <div class="sky" id="sky" tabindex="0" aria-label="Sky image. Use arrow keys to step, or Space to play.">
+          <div class="sky-plate" id="sky-plate">
+            <div class="sky-image" id="sky-image">
+              <canvas id="frame" width="41" height="41" aria-label="Aligned infrared image of the WISE 0855 field" role="img"></canvas>
+              <canvas id="marks" width="410" height="410" aria-hidden="true"></canvas>
+            </div>
+            <div class="plate-corners" aria-hidden="true"></div>
+          </div>
+          <div class="orientation" aria-label="North up, east left"><span>N ↑</span><span>← E</span></div>
+          <div class="scale" aria-hidden="true"><span id="scale-line"></span><span>30″</span></div>
+        </div>
+        <div class="sky-controls" aria-label="Image tools">
+          <button id="zoom" type="button" aria-label="Zoom. Current zoom is Fit.">Fit</button>
+          <label class="sr-only" for="stretch-preset">Brightness stretch</label>
+          <select id="stretch-preset"><option value="balanced">Balanced</option><option value="faint">Faint</option><option value="linear">Linear</option></select>
+          <button id="inspect" type="button" aria-haspopup="dialog">Inspect</button>
+        </div>
+        <figcaption class="frame-info">
+          <span id="active-slot" class="active-slot" hidden></span>
+          <span id="observation">Aligning observations…</span>
+        </figcaption>
+        <div id="difference-scale" class="difference-scale" hidden aria-label="Symmetric difference scale in megajanskys per steradian">
+          <span id="difference-negative"></span><span>0</span><span id="difference-positive"></span><span>MJy/sr</span>
+        </div>
+      </figure>
+
+      <section class="timeline" aria-label="Observation timeline">
+        <div class="timeline-heading">
+          <h2>Observations</h2>
+          <span id="visit-total"></span>
+        </div>
+        <div class="timeline-body">
+          <div class="playback" aria-label="Observation playback">
+            <button id="previous" type="button" aria-label="Previous frame">←</button>
+            <button id="play" type="button" aria-pressed="false">Play visits</button>
+            <button id="next" type="button" aria-label="Next frame">→</button>
+          </div>
+          <div class="visits" id="visits" aria-label="Observing visits"></div>
+          <div class="compare" aria-label="Compare observations">
+            <div class="pair">
+              <label><span>A</span><select id="reference-frame" aria-label="Visit A, reference"></select></label>
+              <label><span>B</span><select id="comparison-frame" aria-label="Visit B, comparison"></select></label>
+            </div>
+            <div class="compare-actions">
+              <button id="blink" type="button" class="primary" aria-pressed="false">Blink</button>
+              <button id="difference" type="button" aria-pressed="false">Difference</button>
+            </div>
+            <p id="compare-hint" class="compare-hint">Select two visits to compare.</p>
+          </div>
+        </div>
+      </section>
+      <div class="viewer-status">
+        <p id="status" role="status">Preparing viewer…</p>
+        <button id="cancel" type="button" hidden>Cancel</button>
+      </div>
+    </section>
+
+    <dialog id="inspector" aria-labelledby="inspect-title">
+      <div class="inspector-header">
+        <h2 id="inspect-title">Inspect observation</h2>
+        <button id="inspect-close" type="button" autofocus>Close</button>
+      </div>
+      <div class="inspector-body">
+        <p id="inspect-frame" class="inspect-frame"></p>
+        <label class="inline-field">View
+          <select id="mode">
+            <option value="stack">Visit stacks</option>
+            <option value="exposures">Individual exposures</option>
+            <option value="blink">Blink pair</option>
+            <option value="sum">Sum A + B</option>
+            <option value="difference">Difference B − A</option>
+          </select>
+        </label>
+        <details class="tools" open>
+          <summary>Layers</summary>
+          <label class="marker-setting"><input type="checkbox" id="marker"> Predicted position</label>
+          <label><input id="gaia" type="checkbox"> Gaia DR3</label>
+          <label><input id="wise" type="checkbox"> CatWISE2020</label>
+          <p id="catalogue-status" role="status"></p>
+          <div id="catalogue-list"></div>
+        </details>
+        <details class="tools">
+          <summary>Wavelength</summary>
+        <p>Choose a nominal DR1 cube channel to populate the wavelength filter. Midpoint boundaries are approximate and the image remains a time sequence of spectral exposures.</p>
+        <button id="channels-load" type="button">Load 102 nominal channels</button>
+        <label>Channel <select id="channels"><option value="">Load channels first</option></select></label>
+        <p id="channels-status" role="status"></p>
+        <p>Filter exposures by wavelength at the field centre (μm). This is an approximate selection; wavelength varies across an image.</p>
+        <label>From <input id="wave-min" type="number" min="0.7" max="5.1" step="0.001" placeholder="4.4"></label>
+        <label>To <input id="wave-max" type="number" min="0.7" max="5.1" step="0.001" placeholder="4.6"></label>
+        <button id="wave-apply" type="button">Apply wavelength filter</button>
+        <button id="wave-reset" type="button">Show full band</button>
+        <p id="wave-status" role="status"></p>
+        </details>
+        <details class="tools">
+          <summary>Quality and provenance</summary>
+        <p>Inspect the 3 × 3 native pixels at the field centre in one exposure. Visit stacks can contain additional flags. Requires Astropy on the server.</p>
+        <button id="quality-fetch" type="button">Inspect exposure flags</button>
+        <p>Or decode a flag value obtained from a data product.</p>
+        <label>Flag value <input id="quality-value" type="number" min="0" max="4294967295" step="1" value="0"></label>
+        <button id="quality-decode" type="button">Decode flags</button>
+        <p id="quality-status" role="status"></p>
+          <p><a href="wise0855_d6.manifest.json" id="bundled-provenance">WISE 0855 exposure list</a></p>
+          <button id="export" type="button">Export view metadata</button>
+        </details>
+        <details class="tools">
+          <summary>Spectrum</summary>
+          <p>Quick-look spectrum uses approximate aperture photometry.</p>
+          <button id="spectrum" type="button">Calculate spectrum</button>
+          <p id="spectrum-status" role="status"></p>
+          <canvas id="spectrum-chart" width="760" height="260" hidden aria-label="Spectrum chart" role="img"></canvas>
+          <a id="spectrum-download" hidden download="skyshift-spectrum.csv">Download spectrum CSV</a>
+        </details>
+        <details class="tools diagnostics">
+          <summary>Diagnostics</summary>
+          <label class="inline-field">Engine
+            <select id="engine"><option value="rust" selected>Rust / WASM</option><option value="typescript">TypeScript</option></select>
+          </label>
+          <label class="inline-field">Cache
+            <select id="cache"><option value="results" selected>Inputs + results</option><option value="inputs">Inputs</option><option value="none">Off</option></select>
+          </label>
+          <button id="clear-cache" type="button">Clear browser cache</button>
+          <button id="show-benchmark" type="button">Benchmark</button>
+    <section class="benchmark" id="benchmark" aria-labelledby="benchmark-heading" hidden>
+      <div class="benchmark-heading">
+        <div>
+          <h2 id="benchmark-heading">Engine benchmark</h2>
+          <p>Both engines align and stack the same pixels. Times are measured on this device.</p>
+        </div>
+        <button id="hide-benchmark" type="button" aria-label="Close benchmark">Close</button>
+      </div>
+      <div class="benchmark-controls">
+        <label>Workload
+          <select id="scenario">
+            <option value="wise0855">WISE 0855 · real exposures</option>
+            <option value="5arcmin">5′ · one band</option>
+            <option value="20arcmin">20′ · one band</option>
+            <option value="sixbands">20′ · six bands</option>
+          </select>
+        </label>
+        <button class="primary" id="run-benchmark" type="button">Run comparison</button>
+      </div>
+      <div class="benchmark-output" id="benchmark-output" aria-live="polite"></div>
+    </section>
+        </details>
+      </div>
+    </dialog>
+  </main>
+  <footer class="page-footer">
+    NASA / IPAC infrared science archive <a href="wise0855_d6.manifest.json">Bundled example provenance</a>
+  </footer>
+  <script>/* BUILD_DATA */
+/* BUILD_JS */</script>
+</body>
+</html>

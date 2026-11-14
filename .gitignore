@@ -1,0 +1,12 @@
+/node_modules/
+/dist/
+/reference/_work/
+__pycache__/
+*.py[cod]
+/.venv/
+/.agents/
+/.aws/
+/.codex/
+/.env
+/.env.*
+!/.env.example

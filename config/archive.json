@@ -1,0 +1,36 @@
+{
+  "siaEndpoint": "https://irsa.ipac.caltech.edu/SIA",
+  "productPrefix": "https://irsa.ipac.caltech.edu/ibe/data/spherex/",
+  "collections": [
+    "spherex_dr1",
+    "spherex_dr1_deep",
+    "spherex_qr3",
+    "spherex_qr3_deep"
+  ],
+  "bandsMicron": [
+    [
+      0.7455,
+      1.1167
+    ],
+    [
+      1.1033,
+      1.6499
+    ],
+    [
+      1.6301,
+      2.4346
+    ],
+    [
+      2.4027,
+      3.8473
+    ],
+    [
+      3.8113,
+      4.43
+    ],
+    [
+      4.4115,
+      5.0096
+    ]
+  ]
+}

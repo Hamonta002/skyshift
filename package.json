@@ -1,0 +1,15 @@
+{
+  "name": "skyshift",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "bench": "node scripts/benchmark.mjs",
+    "dev": "node scripts/serve.mjs",
+    "test": "node scripts/check-cache.mjs && node scripts/check-archive.mjs && node scripts/check-features.mjs && python3 scripts/check-flag-reader.py",
+    "build:examples": "node scripts/build-examples.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  }
+}

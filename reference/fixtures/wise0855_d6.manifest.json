@@ -1,0 +1,381 @@
+{
+  "target": "WISE 0855",
+  "release": "DR1",
+  "detector": 6,
+  "units": "MJy/sr",
+  "grid": {
+    "raDeg": 133.759765,
+    "decDeg": -7.242186,
+    "side": 41,
+    "scaleArcsec": 3.075,
+    "projection": "TAN"
+  },
+  "algorithm": "TAN-SIP bilinear, per-exposure median background, median visit stack",
+  "visitSizes": [
+    3,
+    21,
+    21
+  ],
+  "exposures": [
+    {
+      "productKey": "dr1/level2/2025W19_1B/l2b-v27-2026-197/6/level2_2025W19_1B_0116_1D6_spx_l2b-v27-2026-197.fits",
+      "observationId": "2025W19_1B_0116_1",
+      "collection": "spherex_dr1",
+      "mjdAvg": 60800.70069465,
+      "wavelengthMicron": 4.967350284557614,
+      "bandwidthMicron": 0.037187052062519786
+    },
+    {
+      "productKey": "dr1/level2/2025W19_1B/l2b-v27-2026-197/6/level2_2025W19_1B_0116_2D6_spx_l2b-v27-2026-197.fits",
+      "observationId": "2025W19_1B_0116_2",
+      "collection": "spherex_dr1",
+      "mjdAvg": 60800.702186907,
+      "wavelengthMicron": 5.003413047573418,
+      "bandwidthMicron": 0.03758075576993527
+    },
+    {
+      "productKey": "dr1/level2/2025W19_1B/l2b-v27-2026-197/6/level2_2025W19_1B_0138_1D6_spx_l2b-v27-2026-197.fits",
+      "observationId": "2025W19_1B_0138_1",
+      "collection": "spherex_dr1",
+      "mjdAvg": 60800.835104036,
+      "wavelengthMicron": 4.859846508113206,
+      "bandwidthMicron": 0.037932798412734274
+    },
+    {
+      "productKey": "dr1/level2/2025W46_1A/l2b-v27-2026-206/6/level2_2025W46_1A_0075_4D6_spx_l2b-v27-2026-206.fits",
+      "observationId": "2025W46_1A_0075_4",
+      "collection": "spherex_dr1",
+      "mjdAvg": 60989.297473643,
+      "wavelengthMicron": 4.417819012850014,
+      "bandwidthMicron": 0.037247308136865005
+    },
+    {
+      "productKey": "dr1/level2/2025W46_1A/l2b-v27-2026-206/6/level2_2025W46_1A_0076_1D6_spx_l2b-v27-2026-206.fits",
+      "observationId": "2025W46_1A_0076_1",
+      "collection": "spherex_dr1",
+      "mjdAvg": 60989.299214604,
+      "wavelengthMicron": 4.4493355790826135,
+      "bandwidthMicron": 0.03656635673321011
+    },
+    {
+      "productKey": "dr1/level2/2025W46_1A/l2b-v27-2026-206/6/level2_2025W46_1A_0076_2D6_spx_l2b-v27-2026-206.fits",
+      "observationId": "2025W46_1A_0076_2",
+      "collection": "spherex_dr1",
+      "mjdAvg": 60989.300706861,
+      "wavelengthMicron": 4.4812581933907065,
+      "bandwidthMicron": 0.036030967879280035
+    },
+    {
+      "productKey": "dr1/level2/2025W46_1A/l2b-v27-2026-206/6/level2_2025W46_1A_0076_3D6_spx_l2b-v27-2026-206.fits",
+      "observationId": "2025W46_1A_0076_3",
+      "collection": "spherex_dr1",
+      "mjdAvg": 60989.302199117,
+      "wavelengthMicron": 4.513886108698181,
+      "bandwidthMicron": 0.03591518725469692
+    },
+    {
+      "productKey": "dr1/level2/2025W46_1A/l2b_retry-v27-2026-207/6/level2_2025W46_1A_0090_1D6_spx_l2b_retry-v27-2026-207.fits",
+      "observationId": "2025W46_1A_0090_1",
+      "collection": "spherex_dr1",
+      "mjdAvg": 60989.3654423,
+      "wavelengthMicron": 4.546308552036003,
+      "bandwidthMicron": 0.035812875931733865
+    },
+    {
+      "productKey": "dr1/level2/2025W46_1A/l2b-v27-2026-206/6/level2_2025W46_1A_0090_2D6_spx_l2b-v27-2026-206.fits",
+      "observationId": "2025W46_1A_0090_2",
+      "collection": "spherex_dr1",
+      "mjdAvg": 60989.366934557,
+      "wavelengthMicron": 4.579676235167026,
+      "bandwidthMicron": 0.03606863015675522
+    },
+    {
+      "productKey": "dr1/level2/2025W46_1A/l2b-v27-2026-206/6/level2_2025W46_1A_0090_3D6_spx_l2b-v27-2026-206.fits",
+      "observationId": "2025W46_1A_0090_3",
+      "collection": "spherex_dr1",
+      "mjdAvg": 60989.368426814,
+      "wavelengthMicron": 4.613059779849437,
+      "bandwidthMicron": 0.03632715239804688
+    },
+    {
+      "productKey": "dr1/level2/2025W46_1A/l2b-v27-2026-206/6/level2_2025W46_1A_0238_1D6_spx_l2b-v27-2026-206.fits",
+      "observationId": "2025W46_1A_0238_1",
+      "collection": "spherex_dr1",
+      "mjdAvg": 60989.977657659,
+      "wavelengthMicron": 4.633686750195484,
+      "bandwidthMicron": 0.036580113102676184
+    },
+    {
+      "productKey": "dr1/level2/2025W46_1A/l2b-v27-2026-206/6/level2_2025W46_1A_0238_2D6_spx_l2b-v27-2026-206.fits",
+      "observationId": "2025W46_1A_0238_2",
+      "collection": "spherex_dr1",
+      "mjdAvg": 60989.979149916,
+      "wavelengthMicron": 4.667800833719666,
+      "bandwidthMicron": 0.036698554761693876
+    },
+    {
+      "productKey": "dr1/level2/2025W46_2A/l2b-v27-2026-207/6/level2_2025W46_2A_0214_1D6_spx_l2b-v27-2026-207.fits",
+      "observationId": "2025W46_2A_0214_1",
+      "collection": "spherex_dr1",
+      "mjdAvg": 60993.505774928,
+      "wavelengthMicron": 4.701797937268484,
+      "bandwidthMicron": 0.03676941774120139
+    },
+    {
+      "productKey": "dr1/level2/2025W46_2A/l2b-v27-2026-207/6/level2_2025W46_2A_0214_2D6_spx_l2b-v27-2026-207.fits",
+      "observationId": "2025W46_2A_0214_2",
+      "collection": "spherex_dr1",
+      "mjdAvg": 60993.507267173,
+      "wavelengthMicron": 4.73604785942326,
+      "bandwidthMicron": 0.036594217516142585
+    },
+    {
+      "productKey": "dr1/level2/2025W46_2A/l2b-v27-2026-207/6/level2_2025W46_2A_0214_3D6_spx_l2b-v27-2026-207.fits",
+      "observationId": "2025W46_2A_0214_3",
+      "collection": "spherex_dr1",
+      "mjdAvg": 60993.508759418,
+      "wavelengthMicron": 4.77031283530591,
+      "bandwidthMicron": 0.03641972949897159
+    },
+    {
+      "productKey": "dr1/level2/2025W46_2A/l2b-v27-2026-207/6/level2_2025W46_2A_0214_4D6_spx_l2b-v27-2026-207.fits",
+      "observationId": "2025W46_2A_0214_4",
+      "collection": "spherex_dr1",
+      "mjdAvg": 60993.510251698,
+      "wavelengthMicron": 4.804921332984135,
+      "bandwidthMicron": 0.036699974770411974
+    },
+    {
+      "productKey": "dr1/level2/2025W46_2A/l2b-v27-2026-207/6/level2_2025W46_2A_0226_1D6_spx_l2b-v27-2026-207.fits",
+      "observationId": "2025W46_2A_0226_1",
+      "collection": "spherex_dr1",
+      "mjdAvg": 60993.574916062,
+      "wavelengthMicron": 4.839359335103874,
+      "bandwidthMicron": 0.0370004453029474
+    },
+    {
+      "productKey": "dr1/level2/2025W46_2A/l2b_retry-v27-2026-207/6/level2_2025W46_2A_0226_2D6_spx_l2b_retry-v27-2026-207.fits",
+      "observationId": "2025W46_2A_0226_2",
+      "collection": "spherex_dr1",
+      "mjdAvg": 60993.576408319,
+      "wavelengthMicron": 4.874832996819075,
+      "bandwidthMicron": 0.03726937643610062
+    },
+    {
+      "productKey": "dr1/level2/2025W46_2A/l2b-v27-2026-207/6/level2_2025W46_2A_0226_3D6_spx_l2b-v27-2026-207.fits",
+      "observationId": "2025W46_2A_0226_3",
+      "collection": "spherex_dr1",
+      "mjdAvg": 60993.577900564,
+      "wavelengthMicron": 4.910606957168938,
+      "bandwidthMicron": 0.0375273658621343
+    },
+    {
+      "productKey": "dr1/level2/2025W46_2A/l2b-v27-2026-207/6/level2_2025W46_2A_0226_4D6_spx_l2b-v27-2026-207.fits",
+      "observationId": "2025W46_2A_0226_4",
+      "collection": "spherex_dr1",
+      "mjdAvg": 60993.579392833,
+      "wavelengthMicron": 4.946455565669483,
+      "bandwidthMicron": 0.03756273157615283
+    },
+    {
+      "productKey": "dr1/level2/2025W46_2A/l2b-v27-2026-207/6/level2_2025W46_2A_0289_1D6_spx_l2b-v27-2026-207.fits",
+      "observationId": "2025W46_2A_0289_1",
+      "collection": "spherex_dr1",
+      "mjdAvg": 60993.913551328,
+      "wavelengthMicron": 4.982140366593524,
+      "bandwidthMicron": 0.037387712172793894
+    },
+    {
+      "productKey": "dr1/level2/2025W50_2A/l2b-v27-2026-210/6/level2_2025W50_2A_0232_1D6_spx_l2b-v27-2026-210.fits",
+      "observationId": "2025W50_2A_0232_1",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61021.283493666,
+      "wavelengthMicron": 4.633629671574227,
+      "bandwidthMicron": 0.03656602908166091
+    },
+    {
+      "productKey": "dr1/level2/2025W50_2A/l2b-v27-2026-210/6/level2_2025W50_2A_0254_1D6_spx_l2b-v27-2026-210.fits",
+      "observationId": "2025W50_2A_0254_1",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61021.352084106,
+      "wavelengthMicron": 4.701834281777865,
+      "bandwidthMicron": 0.03677642615926531
+    },
+    {
+      "productKey": "dr1/level2/2025W50_2A/l2b-v27-2026-210/6/level2_2025W50_2A_0428_1D6_spx_l2b-v27-2026-210.fits",
+      "observationId": "2025W50_2A_0428_1",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61022.029798828,
+      "wavelengthMicron": 4.736049466853745,
+      "bandwidthMicron": 0.036605456883634646
+    },
+    {
+      "productKey": "dr1/level2/2026W17_1B/l2b-v27-2026-242/6/level2_2026W17_1B_0227_2D6_spx_l2b-v27-2026-242.fits",
+      "observationId": "2026W17_1B_0227_2",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61151.198599395,
+      "wavelengthMicron": 4.423782769235143,
+      "bandwidthMicron": 0.035833663362467655
+    },
+    {
+      "productKey": "dr1/level2/2026W17_1B/l2b-v27-2026-242/6/level2_2026W17_1B_0227_3D6_spx_l2b-v27-2026-242.fits",
+      "observationId": "2026W17_1B_0227_3",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61151.200091652,
+      "wavelengthMicron": 4.454981303889527,
+      "bandwidthMicron": 0.03577729704623293
+    },
+    {
+      "productKey": "dr1/level2/2026W17_1B/l2b-v27-2026-242/6/level2_2026W17_1B_0227_4D6_spx_l2b-v27-2026-242.fits",
+      "observationId": "2026W17_1B_0227_4",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61151.201583909,
+      "wavelengthMicron": 4.486354603437654,
+      "bandwidthMicron": 0.035723935190053915
+    },
+    {
+      "productKey": "dr1/level2/2026W17_1B/l2b-v27-2026-242/6/level2_2026W17_1B_0507_1D6_spx_l2b-v27-2026-242.fits",
+      "observationId": "2026W17_1B_0507_1",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61152.757969777,
+      "wavelengthMicron": 4.518668978496644,
+      "bandwidthMicron": 0.03569485621646999
+    },
+    {
+      "productKey": "dr1/level2/2026W17_1B/l2b-v27-2026-242/6/level2_2026W17_1B_0507_2D6_spx_l2b-v27-2026-242.fits",
+      "observationId": "2026W17_1B_0507_2",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61152.759462023,
+      "wavelengthMicron": 4.551011070232141,
+      "bandwidthMicron": 0.03566671924683262
+    },
+    {
+      "productKey": "dr1/level2/2026W17_1B/l2b-v27-2026-242/6/level2_2026W17_1B_0507_3D6_spx_l2b-v27-2026-242.fits",
+      "observationId": "2026W17_1B_0507_3",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61152.76095428,
+      "wavelengthMicron": 4.584125386513108,
+      "bandwidthMicron": 0.03592146606660469
+    },
+    {
+      "productKey": "dr1/level2/2026W17_1B/l2b-v27-2026-242/6/level2_2026W17_1B_0634_1D6_spx_l2b-v27-2026-242.fits",
+      "observationId": "2026W17_1B_0634_1",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61153.437123226,
+      "wavelengthMicron": 4.617320576592817,
+      "bandwidthMicron": 0.03620683243448212
+    },
+    {
+      "productKey": "dr1/level2/2026W17_1B/l2b-v27-2026-242/6/level2_2026W17_1B_0634_2D6_spx_l2b-v27-2026-242.fits",
+      "observationId": "2026W17_1B_0634_2",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61153.438615495,
+      "wavelengthMicron": 4.651091236963957,
+      "bandwidthMicron": 0.03630934692867134
+    },
+    {
+      "productKey": "dr1/level2/2026W17_1B/l2b-v27-2026-242/6/level2_2026W17_1B_0634_3D6_spx_l2b-v27-2026-242.fits",
+      "observationId": "2026W17_1B_0634_3",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61153.44010774,
+      "wavelengthMicron": 4.685148532753061,
+      "bandwidthMicron": 0.036318803789890566
+    },
+    {
+      "productKey": "dr1/level2/2026W17_1B/l2b-v27-2026-242/6/level2_2026W17_1B_0634_4D6_spx_l2b-v27-2026-242.fits",
+      "observationId": "2026W17_1B_0634_4",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61153.441599997,
+      "wavelengthMicron": 4.719174443095799,
+      "bandwidthMicron": 0.03649344446658436
+    },
+    {
+      "productKey": "dr1/level2/2026W17_2A/l2b-v27-2026-243/6/level2_2026W17_2A_0591_1D6_spx_l2b-v27-2026-243.fits",
+      "observationId": "2026W17_2A_0591_1",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61156.086177138,
+      "wavelengthMicron": 4.821568028234997,
+      "bandwidthMicron": 0.03667277903524813
+    },
+    {
+      "productKey": "dr1/level2/2026W17_2A/l2b-v27-2026-243/6/level2_2026W17_2A_0609_1D6_spx_l2b-v27-2026-243.fits",
+      "observationId": "2026W17_2A_0609_1",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61156.153381895,
+      "wavelengthMicron": 4.753121801199493,
+      "bandwidthMicron": 0.03687290571857402
+    },
+    {
+      "productKey": "dr1/level2/2026W17_2A/l2b-v27-2026-243/6/level2_2026W17_2A_0609_2D6_spx_l2b-v27-2026-243.fits",
+      "observationId": "2026W17_2A_0609_2",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61156.154891907,
+      "wavelengthMicron": 4.7871636981320265,
+      "bandwidthMicron": 0.03707880868347084
+    },
+    {
+      "productKey": "dr1/level2/2026W17_2A/l2b-v27-2026-243/6/level2_2026W17_2A_0692_1D6_spx_l2b-v27-2026-243.fits",
+      "observationId": "2026W17_2A_0692_1",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61156.493846861,
+      "wavelengthMicron": 4.895454720703998,
+      "bandwidthMicron": 0.037395963472085764
+    },
+    {
+      "productKey": "dr1/level2/2026W17_2A/l2b-v27-2026-243/6/level2_2026W17_2A_0692_2D6_spx_l2b-v27-2026-243.fits",
+      "observationId": "2026W17_2A_0692_2",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61156.495339106,
+      "wavelengthMicron": 4.931284204962897,
+      "bandwidthMicron": 0.03686269926364211
+    },
+    {
+      "productKey": "dr1/level2/2026W18_2A/l2b-v27-2026-244/6/level2_2026W18_2A_0065_1D6_spx_l2b-v27-2026-244.fits",
+      "observationId": "2026W18_2A_0065_1",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61160.771483435,
+      "wavelengthMicron": 4.824914524799942,
+      "bandwidthMicron": 0.03753172936802265
+    },
+    {
+      "productKey": "dr1/level2/2026W19_2A/l2b-v27-2026-245/6/level2_2026W19_2A_0568_1D6_spx_l2b-v27-2026-245.fits",
+      "observationId": "2026W19_2A_0568_1",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61168.985404546,
+      "wavelengthMicron": 4.824957964730876,
+      "bandwidthMicron": 0.03752877067477894
+    },
+    {
+      "productKey": "dr1/level2/2026W19_2A/l2b-v27-2026-245/6/level2_2026W19_2A_0651_1D6_spx_l2b-v27-2026-245.fits",
+      "observationId": "2026W19_2A_0651_1",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61169.194888736,
+      "wavelengthMicron": 4.859713880165763,
+      "bandwidthMicron": 0.03793249914240402
+    },
+    {
+      "productKey": "dr1/level2/2026W19_2A/l2b-v27-2026-245/6/level2_2026W19_2A_0782_1D6_spx_l2b-v27-2026-245.fits",
+      "observationId": "2026W19_2A_0782_1",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61169.528318874,
+      "wavelengthMicron": 4.895388985764242,
+      "bandwidthMicron": 0.03739778771058867
+    },
+    {
+      "productKey": "dr1/level2/2026W19_2A/l2b-v27-2026-245/6/level2_2026W19_2A_0952_1D6_spx_l2b-v27-2026-245.fits",
+      "observationId": "2026W19_2A_0952_1",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61169.933874661,
+      "wavelengthMicron": 4.931240954118185,
+      "bandwidthMicron": 0.03686817804379289
+    },
+    {
+      "productKey": "dr1/level2/2026W20_1A/l2b-v27-2026-246/6/level2_2026W20_1A_0033_1D6_spx_l2b-v27-2026-246.fits",
+      "observationId": "2026W20_1A_0033_1",
+      "collection": "spherex_dr1",
+      "mjdAvg": 61171.097016444,
+      "wavelengthMicron": 4.9673082367092425,
+      "bandwidthMicron": 0.0371868776979736
+    }
+  ]
+}
