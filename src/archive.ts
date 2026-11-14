@@ -11,6 +11,9 @@ namespace SkyShift {
   type Header = Record<string, string | number>;
   const bucket = "https://nasa-irsa-spherex.s3.amazonaws.com/";
   const cropCache = new Map<string, { header: ExposureHeader; pixels: Float32Array }>();
+  interface WaveGrid { nx: number; ny: number; xs: number[]; ys: number[]; values: Float32Array; }
+  const waveCache = new Map<string, WaveGrid>();
+  const waveInflight = new Map<string, Promise<WaveGrid>>();
   const fixtureStore = new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open("skyshift-live-fixtures", 1);
     request.onupgradeneeded = () => request.result.createObjectStore("fixtures", { keyPath: "key" });
@@ -68,6 +71,8 @@ namespace SkyShift {
 
   export async function clearBrowserCaches(): Promise<void> {
     cropCache.clear();
+    waveCache.clear();
+    waveInflight.clear();
     const db = await fixtureStore;
     if (db) await new Promise<void>((resolve, reject) => {
       const tx = db.transaction("fixtures", "readwrite"); tx.objectStore("fixtures").clear();
@@ -80,24 +85,41 @@ namespace SkyShift {
     });
   }
 
-  async function range(key: string, start: number, end: number, signal: AbortSignal): Promise<ArrayBuffer> {
+  export function parseRetryAfterMs(headerValue: string | null | undefined, fallbackMs: number, nowMs = Date.now()): number {
+    if (!headerValue) return fallbackMs;
+    const trimmed = headerValue.trim();
+    if (/^\d+(?:\.\d+)?$/.test(trimmed)) return Math.min(15000, Math.max(0, Math.round(Number(trimmed) * 1000)));
+    const parsedDate = Date.parse(trimmed);
+    if (Number.isFinite(parsedDate)) return Math.min(15000, Math.max(0, parsedDate - nowMs));
+    return fallbackMs;
+  }
+
+  async function fetchRangeResponse(key: string, rangeHeader: string, signal: AbortSignal): Promise<Response> {
     if (!/^[a-z0-9_]+\/level2\/[a-zA-Z0-9_./-]+\.fits$/.test(key) || key.includes("..")) {
       throw new Error("Invalid archive product key.");
     }
     for (let attempt = 0; attempt < 3; attempt++) {
-      const response = await fetch(bucket + key, { headers: { Range: `bytes=${start}-${end}` }, signal });
+      if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
+      const response = await fetch(bucket + key, { headers: { Range: rangeHeader }, signal });
       if ((response.status === 429 || response.status === 503) && attempt < 2) {
-        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+        const delayMs = parseRetryAfterMs(response.headers?.get("Retry-After"), 1000 * (attempt + 1));
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
         continue;
       }
-      if (response.status !== 206) throw new Error(`Archive range request failed: ${response.status}`);
-      const contentRange = response.headers.get("Content-Range");
-      if (contentRange && !contentRange.startsWith(`bytes ${start}-${end}/`)) throw new Error("Archive returned the wrong byte range.");
-      const bytes = await response.arrayBuffer();
-      if (bytes.byteLength !== end - start + 1) throw new Error("Archive returned an incomplete range.");
-      return bytes;
+      return response;
     }
     throw new Error("Archive is busy. Try again.");
+  }
+
+  async function range(key: string, start: number, end: number, signal: AbortSignal): Promise<ArrayBuffer> {
+    const response = await fetchRangeResponse(key, `bytes=${start}-${end}`, signal);
+    if (response.status === 429 || response.status === 503) throw new Error("Archive is busy. Try again.");
+    if (response.status !== 206) throw new Error(`Archive range request failed: ${response.status}`);
+    const contentRange = response.headers.get("Content-Range");
+    if (contentRange && !contentRange.startsWith(`bytes ${start}-${end}/`)) throw new Error("Archive returned the wrong byte range.");
+    const bytes = await response.arrayBuffer();
+    if (bytes.byteLength !== end - start + 1) throw new Error("Archive returned an incomplete range.");
+    return bytes;
   }
 
   function fitsHeader(bytes: Uint8Array, start: number): { values: Header; end: number } {
@@ -199,29 +221,60 @@ namespace SkyShift {
     return result;
   }
 
+  function waveCacheKey(productKey: string): string {
+    const release = /^([a-z0-9_]+)\/level2\//.exec(productKey)?.[1];
+    const detMatch = /(?:\/([1-6])\/[^/]+|_D([1-6])_)[^/]*\.fits$/.exec(productKey);
+    const detector = detMatch?.[1] ?? detMatch?.[2];
+    return release && detector ? `${release}:D${detector}` : productKey;
+  }
+
+  async function loadWaveGrid(productKey: string, signal: AbortSignal): Promise<WaveGrid> {
+    if (!/^[a-z0-9_]+\/level2\/[a-zA-Z0-9_./-]+\.fits$/.test(productKey) || productKey.includes("..")) {
+      throw new Error("Invalid archive product key.");
+    }
+    const key = waveCacheKey(productKey);
+    const cached = waveCache.get(key);
+    if (cached) return cached;
+    let pending = waveInflight.get(key);
+    if (!pending) {
+      pending = (async () => {
+        const response = await fetchRangeResponse(productKey, "bytes=-5760", signal);
+        if (response.status !== 206) throw new Error("Wavelength lookup could not be downloaded.");
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (bytes.length !== 5760) throw new Error("Unexpected wavelength lookup size.");
+        const table = fitsHeader(bytes, 0);
+        if (table.values.EXTNAME !== "WCS-WAVE") throw new Error("Unsupported wavelength lookup layout.");
+        const nx = parseInt(String(table.values.TFORM1), 10), ny = parseInt(String(table.values.TFORM2), 10);
+        if (!(nx >= 2 && ny >= 2 && 4 * (nx + ny) + 8 * nx * ny <= bytes.length - table.end)) {
+          throw new Error("Invalid wavelength lookup dimensions.");
+        }
+        const data = new DataView(bytes.buffer, bytes.byteOffset + table.end);
+        const xs = Array.from({ length: nx }, (_, i) => data.getInt32(i * 4, false));
+        const ys = Array.from({ length: ny }, (_, i) => data.getInt32((nx + i) * 4, false));
+        const base = 4 * (nx + ny);
+        const values = new Float32Array(2 * nx * ny);
+        for (let i = 0; i < values.length; i++) values[i] = data.getFloat32(base + i * 4, false);
+        const grid: WaveGrid = { nx, ny, xs, ys, values };
+        waveCache.set(key, grid);
+        return grid;
+      })().finally(() => waveInflight.delete(key));
+      waveInflight.set(key, pending);
+    }
+    return pending;
+  }
+
   export async function fetchWavelength(header: ExposureHeader, x: number, y: number, signal: AbortSignal): Promise<[number, number]> {
     if (header.wavelength !== undefined && header.bandwidth !== undefined) return [header.wavelength, header.bandwidth];
     if (!header.productKey) throw new Error("Wavelength metadata is unavailable.");
-    const response = await fetch(bucket + header.productKey, { headers: { Range: "bytes=-5760" }, signal });
-    if (response.status !== 206) throw new Error("Wavelength lookup could not be downloaded.");
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.length !== 5760) throw new Error("Unexpected wavelength lookup size.");
-    const table = fitsHeader(bytes, 0);
-    if (table.values.EXTNAME !== "WCS-WAVE") throw new Error("Unsupported wavelength lookup layout.");
-    const nx = parseInt(String(table.values.TFORM1), 10), ny = parseInt(String(table.values.TFORM2), 10);
-    if (!(nx >= 2 && ny >= 2 && 4 * (nx + ny) + 8 * nx * ny <= bytes.length - table.end)) {
-      throw new Error("Invalid wavelength lookup dimensions.");
-    }
-    const data = new DataView(bytes.buffer, bytes.byteOffset + table.end);
-    const xs = Array.from({ length: nx }, (_, i) => data.getInt32(i * 4, false));
-    const ys = Array.from({ length: ny }, (_, i) => data.getInt32((nx + i) * 4, false));
+    if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
+    const grid = await loadWaveGrid(header.productKey, signal);
+    const { nx, xs, ys, values } = grid;
     const find = (axis: number[], position: number) => Math.max(0, Math.min(axis.length - 2, axis.findIndex((value) => value >= position) - 1 < 0
       ? (position > axis[axis.length - 1] ? axis.length - 2 : 0) : axis.findIndex((value) => value >= position) - 1));
     const ix = find(xs, x + 1), iy = find(ys, y + 1);
     const tx = (x + 1 - xs[ix]) / (xs[ix + 1] - xs[ix]);
     const ty = (y + 1 - ys[iy]) / (ys[iy + 1] - ys[iy]);
-    const base = 4 * (nx + ny);
-    const v = (px: number, py: number, column: number) => data.getFloat32(base + 8 * (py * nx + px) + column * 4, false);
+    const v = (px: number, py: number, column: number) => values[2 * (py * nx + px) + column];
     const interpolate = (column: number) => v(ix, iy, column) * (1 - tx) * (1 - ty)
       + v(ix + 1, iy, column) * tx * (1 - ty) + v(ix, iy + 1, column) * (1 - tx) * ty
       + v(ix + 1, iy + 1, column) * tx * ty;
@@ -255,10 +308,14 @@ namespace SkyShift {
     }
     if (!visits.length) throw new Error("No observations cover this field.");
     const estimatedBytes = 28800 + Math.ceil(fov * 60 / 6.15 * Math.SQRT2 + 6) * 8160;
-    const maximum = Math.min(60, Math.floor(32 * 1024 * 1024 / estimatedBytes));
-    if (visits.length > maximum) throw new Error("Too many visits for the initial download. Choose a smaller field.");
-    const perVisit = Math.max(1, Math.floor(maximum / visits.length));
-    const selected = visits.map((visit) => visit.filter((_, i) => i % Math.max(1, Math.ceil(visit.length / perVisit)) === 0).slice(0, perVisit));
+    const maximum = Math.max(1, Math.min(60, Math.floor(32 * 1024 * 1024 / estimatedBytes)));
+    const keptVisits = visits.length <= maximum
+      ? visits
+      : maximum === 1
+        ? [visits[0]]
+        : Array.from({ length: maximum }, (_, i) => visits[Math.round(i * (visits.length - 1) / (maximum - 1))]);
+    const perVisit = Math.max(1, Math.floor(maximum / keptVisits.length));
+    const selected = keptVisits.map((visit) => visit.filter((_, i) => i % Math.max(1, Math.ceil(visit.length / perVisit)) === 0).slice(0, perVisit));
     const cacheKey = JSON.stringify({ version: 1, ra, dec, fov, inputs: selected.map((visit) => visit.map((item) => item.productKey)) });
     const saved = useCache ? await cachedFixture(cacheKey) : undefined;
     if (saved) return saved;

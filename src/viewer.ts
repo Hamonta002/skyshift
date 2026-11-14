@@ -43,6 +43,7 @@ declare const ASSETS: {
   const benchmark = get("benchmark");
   const benchmarkOutput = get("benchmark-output");
   const run = get<HTMLButtonElement>("run-benchmark");
+  const earlierWindowButton = get<HTMLButtonElement>("earlier-window");
   const scenarioSelect = get<HTMLSelectElement>("scenario");
   const stretchInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[name="stretch"]'));
   const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
@@ -83,8 +84,15 @@ declare const ASSETS: {
   }
 
   const params = new URLSearchParams(location.search);
+  const hasWasm = Boolean(ASSETS.wasm);
+  const rustOption = engineSelect.querySelector('option[value="rust"]') as HTMLOptionElement | null;
   const requestedEngine = params.get("engine");
-  if (requestedEngine === "rust" || requestedEngine === "typescript") engineSelect.value = requestedEngine;
+  if (!hasWasm) {
+    if (rustOption) rustOption.disabled = true;
+    engineSelect.value = "typescript";
+  } else if (requestedEngine === "rust" || requestedEngine === "typescript") {
+    engineSelect.value = requestedEngine;
+  }
   const requestedCache = params.get("cache");
   if (requestedCache === "results" || requestedCache === "inputs" || requestedCache === "none") {
     cacheSelect.value = requestedCache;
@@ -123,6 +131,7 @@ declare const ASSETS: {
     engineSelect.disabled = busy;
     cacheSelect.disabled = busy;
     run.disabled = busy;
+    earlierWindowButton.disabled = busy;
     scenarioSelect.disabled = busy;
     cancel.hidden = !busy;
     if (busy !== lastBusy) { lastBusy = busy; showToast(); }
@@ -448,19 +457,21 @@ declare const ASSETS: {
           ctx.beginPath(); ctx.arc(p[0], p[1], radius, 0, 2 * Math.PI); ctx.stroke();
         }
       }
-      if (marker.checked && isBundled && mjd !== undefined) {
-        // Linear proper-motion prediction relative to the 2026.0 field centre.
-        const time = 2000 + (mjd - 51544.5) / 365.25 - 2026;
-        const [ra, dec] = SkyShift.unproject({ ra: fixture.ra0, dec: fixture.dec0, z: 0 }, 8.1237 * time, -0.6732 * time, 1);
-        const p = toScreen(ra, dec, k);
-        if (p) {
-          const gap = Math.max(13, 1.6 * pixelPx);
-          ctx.strokeStyle = "#a3deca";
-          ctx.lineWidth = 1.6;
-          ctx.beginPath();
-          ctx.moveTo(p[0] - gap - 17, p[1]); ctx.lineTo(p[0] - gap, p[1]);
-          ctx.moveTo(p[0], p[1] - gap - 17); ctx.lineTo(p[0], p[1] - gap);
-          ctx.stroke();
+      if (marker.checked && mjd !== undefined) {
+        const pmTarget = (currentTargetId ? SkyShift.TARGETS.find((item) => item.id === currentTargetId) : undefined)
+          ?? SkyShift.findTargetAt(fixture.ra0, fixture.dec0);
+        if (pmTarget && pmTarget.pmra !== undefined && pmTarget.pmdec !== undefined) {
+          const [ra, dec] = SkyShift.targetPosition(pmTarget, mjd);
+          const p = toScreen(ra, dec, k);
+          if (p) {
+            const gap = Math.max(13, 1.6 * pixelPx);
+            ctx.strokeStyle = "#a3deca";
+            ctx.lineWidth = 1.6;
+            ctx.beginPath();
+            ctx.moveTo(p[0] - gap - 17, p[1]); ctx.lineTo(p[0] - gap, p[1]);
+            ctx.moveTo(p[0], p[1] - gap - 17); ctx.lineTo(p[0], p[1] - gap);
+            ctx.stroke();
+          }
         }
       }
     }
@@ -1113,15 +1124,27 @@ declare const ASSETS: {
     frame = 0; get("wave-status").textContent = "Showing the full detector band.";
     void load(fullBandFixture);
   });
+  let spectrumUrl: string | undefined;
+  function revokeSpectrumUrl(): void {
+    if (!spectrumUrl) return;
+    URL.revokeObjectURL(spectrumUrl);
+    spectrumUrl = undefined;
+    const download = get<HTMLAnchorElement>("spectrum-download");
+    download.removeAttribute("href");
+    download.hidden = true;
+  }
+
   get("spectrum").addEventListener("click", async () => {
     const output = get("spectrum-status");
     const chart = get<HTMLCanvasElement>("spectrum-chart");
     const download = get<HTMLAnchorElement>("spectrum-download");
     output.textContent = "Calculating spectrum…";
     chart.hidden = true;
-    download.hidden = true;
+    revokeSpectrumUrl();
     try {
-      const points = await SkyShift.quickSpectrum(fixture, new AbortController().signal);
+      const spectrumTarget = (currentTargetId ? SkyShift.TARGETS.find((item) => item.id === currentTargetId) : undefined)
+        ?? SkyShift.findTargetAt(fixture.ra0, fixture.dec0);
+      const points = await SkyShift.quickSpectrum(fixture, new AbortController().signal, spectrumTarget);
       if (!points.length) throw new Error("No usable measurements are available.");
       const ctx = chart.getContext("2d")!;
       const xs = points.map((p) => p.wavelength), ys = points.map((p) => p.flux);
@@ -1143,7 +1166,8 @@ declare const ASSETS: {
         ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill();
       }
       chart.hidden = false;
-      download.href = URL.createObjectURL(new Blob(["wavelength_um,bandwidth_um,approx_flux_jy,visit,mjd,product_key\n" + points.map((p) => `${p.wavelength},${p.bandwidth},${p.flux},"${p.date}",${p.mjd ?? ""},"${p.productKey ?? ""}"`).join("\n")], { type: "text/csv" }));
+      spectrumUrl = URL.createObjectURL(new Blob(["wavelength_um,bandwidth_um,approx_flux_jy,visit,mjd,product_key\n" + points.map((p) => `${p.wavelength},${p.bandwidth},${p.flux},"${p.date}",${p.mjd ?? ""},"${p.productKey ?? ""}"`).join("\n")], { type: "text/csv" }));
+      download.href = spectrumUrl;
       download.hidden = false;
       output.textContent = `${points.length} measurements · approximate flux, no aperture correction or uncertainty`;
     } catch (error) { output.textContent = error instanceof Error ? error.message : String(error); }
@@ -1216,6 +1240,9 @@ declare const ASSETS: {
     candidates = []; candidateCard.hidden = true;
     colour = null; showColour = false;
     get("colour-status").textContent = "";
+    revokeSpectrumUrl();
+    get("spectrum-chart").hidden = true;
+    get("spectrum-status").textContent = "";
     updateColourToggle();
   }
 
@@ -1562,7 +1589,15 @@ declare const ASSETS: {
     const bands = ["colour-r", "colour-g", "colour-b"].map((id) => Number(get<HTMLSelectElement>(id).value));
     const output = get("colour-status");
     if (new Set(bands).size < 3) { output.textContent = "Choose three different bands."; return; }
-    const loadedBand = currentSelection?.band ?? 6, fov = currentSelection?.fov ?? 5, side = series.side, frames = series.frames;
+    const loadedBand = currentSelection?.band ?? 6;
+    const fov = currentSelection?.fov ?? (Number(fovSelect.value) || 5);
+    const frameMode = loadedFrameMode;
+    const side = series.side, frames = series.frames;
+    const { fromMjd, toMjd } = SkyShift.searchTimeBounds(
+      currentSelection?.from ?? dateFromInput.value,
+      currentSelection?.to ?? dateToInput.value,
+      currentSelection?.asof,
+    );
     pause();
     busy = true; updateControls();
     const controller = new AbortController();
@@ -1573,8 +1608,10 @@ declare const ASSETS: {
       for (const [i, band] of bands.entries()) {
         if (band === loadedBand) { channels.push(SkyShift.deepStack(frames)); continue; }
         output.textContent = status.textContent = `Colour: searching band ${band} (${i + 1} of 3)…`;
-        const query = new URLSearchParams({ ra: String(fixture.ra0), dec: String(fixture.dec0), band: String(band), fov: String(fov),
-          fromMjd: "60789", toMjd: String(Date.now() / 86400000 + 40587) });
+        const query = new URLSearchParams({
+          ra: String(fixture.ra0), dec: String(fixture.dec0), band: String(band), fov: String(fov),
+          fromMjd: String(fromMjd), toMjd: String(toMjd),
+        });
         const response = await fetch(`/api/observations?${query}`, { signal: controller.signal });
         const data = await response.json().catch(() => null);
         if (!response.ok || !data) throw new Error(data?.error ?? "server");
@@ -1582,14 +1619,14 @@ declare const ASSETS: {
         const bandFixture = await SkyShift.makeLiveFixture(data.observations, fixture.ra0, fixture.dec0, fov, controller.signal, (done, total) => {
           output.textContent = status.textContent = `Colour: downloading band ${band}, ${done} of ${total} observations…`;
         }, cacheSelect.value !== "none");
-        const result = await submit(engineSelect.value as SkyShift.EngineName, "wise0855", cacheSelect.value as SkyShift.CacheLevel, () => {}, bandFixture, "visits");
+        const result = await submit(engineSelect.value as SkyShift.EngineName, "wise0855", cacheSelect.value as SkyShift.CacheLevel, () => {}, bandFixture, frameMode);
         interrupt = cancelColour;
         channels.push(SkyShift.cropGrid(SkyShift.deepStack(result.series.frames), result.series.side, side));
       }
       colour = { bands, channels, side };
       showColour = true;
       updateColourToggle();
-      output.textContent = status.textContent = `Colour composite ready: red band ${bands[0]}, green band ${bands[1]}, blue band ${bands[2]}, all visits stacked.`;
+      output.textContent = status.textContent = `Colour composite ready: red band ${bands[0]}, green band ${bands[1]}, blue band ${bands[2]}, ${frameMode === "exposures" ? "all exposures stacked" : "all visits stacked"}.`;
       busy = false;
       commitView();
     } catch (error) {
@@ -1667,6 +1704,15 @@ declare const ASSETS: {
   let suggestionItems: SkyShift.Target[] = [];
   let activeSuggestion = -1;
   let shownName = "WISE 0855";
+  const dateFromInput = get<HTMLInputElement>("date-from");
+  const dateToInput = get<HTMLInputElement>("date-to");
+  const currentSearchOptions = (): SkyShift.SearchOptionsState => ({
+    band: Number(bandSelect.value),
+    fov: Number(fovSelect.value),
+    from: dateFromInput.value,
+    to: dateToInput.value,
+  });
+  let loadedOptions: SkyShift.SearchOptionsState = { band: 6, fov: 5, from: "", to: "" };
   function openDrop(): void {
     searchDrop.hidden = false;
     query.setAttribute("aria-expanded", "true");
@@ -1706,6 +1752,8 @@ declare const ASSETS: {
         queryPreview.classList.add("invalid");
         queryPreview.textContent = error instanceof Error ? error.message : String(error);
       }
+    } else if (text === shownName && SkyShift.searchOptionsDiffer(currentSearchOptions(), loadedOptions)) {
+      queryPreview.textContent = `Band ${bandSelect.value} · ${fovSelect.value}′ · Enter searches ${shownName} with updated options.`;
     }
     get("query-clear").hidden = !query.value;
   }
@@ -1731,21 +1779,28 @@ declare const ASSETS: {
     optionsToggle.setAttribute("aria-expanded", String(open));
     if (open) { openDrop(); bandSelect.focus(); }
   });
-  for (const control of [bandSelect, fovSelect]) control.addEventListener("change", updateSuggestions);
+  for (const control of [bandSelect, fovSelect, dateFromInput, dateToInput]) control.addEventListener("change", updateSuggestions);
   get<HTMLFormElement>("search").addEventListener("submit", (event) => {
     event.preventDefault();
     const text = query.value.trim();
-    if (text === shownName) { closeDrop(); frameField(); mapCanvas.focus(); return; }
+    const optionsChanged = SkyShift.searchOptionsDiffer(currentSearchOptions(), loadedOptions);
+    if (text === shownName && !optionsChanged) { closeDrop(); frameField(); mapCanvas.focus(); return; }
     let parsed: SkyShift.Query;
     try { parsed = SkyShift.parseQuery(text); }
     catch (error) {
+      if (text === shownName && currentSelection) {
+        void searchFromOptions(currentSelection.ra, currentSelection.dec);
+        return;
+      }
       openDrop();
       queryPreview.classList.add("invalid");
       queryPreview.textContent = error instanceof Error ? error.message : String(error);
       return;
     }
-    if (parsed.kind === "target") void openExample(parsed.target.id);
-    else void searchFromOptions(parsed.ra, parsed.dec);
+    if (parsed.kind === "target") {
+      if (!optionsChanged) void openExample(parsed.target.id);
+      else void searchFromOptions(parsed.target.ra, parsed.target.dec, undefined, parsed.target);
+    } else void searchFromOptions(parsed.ra, parsed.dec);
   });
 
   const chips = get("chips");
@@ -1771,7 +1826,7 @@ declare const ASSETS: {
     if (targetId !== "wise0855") hint.hidden = true;
   }
 
-  let loadedFrameMode = modeSelect.value === "exposures" ? "exposures" : "visits";
+  let loadedFrameMode: "visits" | "exposures" = modeSelect.value === "exposures" ? "exposures" : "visits";
   modeSelect.addEventListener("change", async () => {
     pause();
     colourOff();
@@ -1923,9 +1978,12 @@ declare const ASSETS: {
       frame = modeSelect.value === "exposures" ? 0 : 1;
       if (await load(ASSETS.fixture)) {
         isBundled = true; currentSelection = undefined; fullBandFixture = ASSETS.fixture;
+        setEarlierWindow(null);
         wavelengthSelection = null; marker.checked = false;
         clearCatalogues();
+        fovSelect.value = "5";
         setFieldInfo(target.label, "RA 133.759765° · Dec −7.242186° · 4.42–5.00 μm · 2.1′ field", target.band, target.id);
+        loadedOptions = { band: target.band, fov: 5, from: "", to: "" };
         hideHere();
         frameField();
         commitView();
@@ -1943,15 +2001,19 @@ declare const ASSETS: {
     if (!bundle) {
       // Not bundled in this build: fetch the example from the archive instead.
       fovSelect.value = "5";
-      await searchFromOptions(target.ra, target.dec, undefined, target);
+      bandSelect.value = String(target.band);
+      await searchFromOptions(target.ra, target.dec, undefined, target, true);
       return;
     }
     const previousFrame = frame; frame = 0;
     if (!await load(bundle.fixture)) { frame = previousFrame; return; }
     frame = Number(referenceSelect.value) || 0;
     fullBandFixture = bundle.fixture; wavelengthSelection = null; isBundled = false;
+    setEarlierWindow(null);
+    fovSelect.value = "5";
     currentSelection = { ra: target.ra, dec: target.dec, band: target.band, fov: 5 };
     setFieldInfo(target.label, `RA ${target.ra.toFixed(6)}° · Dec ${target.dec.toFixed(6)}° · Band ${target.band} · 5′ field`, target.band, target.id);
+    loadedOptions = { band: target.band, fov: 5, from: "", to: "" };
     marker.checked = false;
     clearCatalogues();
     hideHere();
@@ -1960,24 +2022,55 @@ declare const ASSETS: {
     status.textContent += " · Bundled sampled observations";
   }
 
-  async function searchFromOptions(ra: number, dec: number, savedAsof?: string, target?: SkyShift.Target): Promise<void> {
-    const band = target?.band ?? Number(bandSelect.value);
+  async function searchFromOptions(
+    ra: number,
+    dec: number,
+    savedAsof?: string,
+    target?: SkyShift.Target,
+    useTargetBand = false,
+    extra: { waveRange?: [number, number] | null; preserveFrame?: boolean } = {},
+  ): Promise<void> {
+    const band = useTargetBand && target ? target.band : Number(bandSelect.value);
     const fov = Number(fovSelect.value);
-    const from = get<HTMLInputElement>("date-from").value, to = get<HTMLInputElement>("date-to").value;
+    const from = dateFromInput.value, to = dateToInput.value;
     if (!!from !== !!to || (from && (Number.isNaN(Date.parse(from)) || Number.isNaN(Date.parse(to)) || from > to))) {
       status.textContent = "Enter both dates in chronological order, or leave both blank.";
       openDrop(); searchOptions.hidden = false; optionsToggle.setAttribute("aria-expanded", "true");
       return;
     }
-    await search({ ra, dec, band, fov, from, to }, savedAsof, target);
+    await search({ ra, dec, band, fov, from, to, ...extra }, savedAsof, target);
   }
 
-  async function search(request: { ra: number; dec: number; band: number; fov: number; from: string; to: string }, savedAsof?: string, named?: SkyShift.Target): Promise<void> {
+  type EarlierWindow = { ra: number; dec: number; band: number; fov: number; from: string; to: string; endMjd: number; target?: SkyShift.Target };
+  let earlierWindow: EarlierWindow | null = null;
+  function setEarlierWindow(nextWindow: EarlierWindow | null): void {
+    earlierWindow = nextWindow;
+    earlierWindowButton.hidden = !nextWindow;
+    if (nextWindow) {
+      const cutoffDate = new Date((nextWindow.endMjd - 40587) * 86400000).toISOString().slice(0, 10);
+      earlierWindowButton.title = `Search earlier 90-day deep-field window (before ${cutoffDate})`;
+    }
+  }
+  earlierWindowButton.addEventListener("click", () => {
+    if (!earlierWindow || busy) return;
+    const { target, ...rest } = earlierWindow;
+    void search(rest, undefined, target);
+  });
+
+  async function search(
+    request: { ra: number; dec: number; band: number; fov: number; from: string; to: string; endMjd?: number; waveRange?: [number, number] | null; preserveFrame?: boolean },
+    savedAsof?: string,
+    named?: SkyShift.Target,
+  ): Promise<void> {
     if (busy) return;
-    const { ra, dec, band, fov, from, to } = request;
-    const cutoff = savedAsof ?? new Date().toISOString();
-    const cutoffMs = Date.parse(cutoff);
-    if (!Number.isFinite(cutoffMs) || cutoffMs > Date.now() + 86400000) { status.textContent = "The shared cutoff date is invalid."; return; }
+    const { ra, dec, band, fov, from, to, endMjd, waveRange, preserveFrame } = request;
+    let startMjd: number, toMjd: number, cutoffMs: number;
+    try {
+      ({ fromMjd: startMjd, toMjd, cutoffMs } = SkyShift.searchTimeBounds(from, to, savedAsof, endMjd));
+    } catch (error) {
+      status.textContent = error instanceof Error ? error.message : String(error);
+      return;
+    }
     pause();
     closeDrop();
     busy = true;
@@ -1986,12 +2079,10 @@ declare const ASSETS: {
     interrupt = () => searchController?.abort();
     try {
       status.textContent = `Searching SPHEREx observations${named ? ` of ${named.label}` : ""}…`;
-      const params = new URLSearchParams({ ra: String(ra), dec: String(dec), band: String(band), fov: String(fov) });
-      const startMs = from ? Date.parse(`${from}T00:00:00Z`) : (60789 - 40587) * 86400000;
-      const endMs = to ? Math.min(Date.parse(`${to}T23:59:59Z`), cutoffMs) : cutoffMs;
-      if (startMs > endMs) throw new Error("The date range starts after the observation cutoff.");
-      params.set("fromMjd", String(startMs / 86400000 + 40587));
-      params.set("toMjd", String(endMs / 86400000 + 40587));
+      const params = new URLSearchParams({
+        ra: String(ra), dec: String(dec), band: String(band), fov: String(fov),
+        fromMjd: String(startMjd), toMjd: String(toMjd),
+      });
       const response = await fetch("/api/observations?" + params, { signal: searchController.signal });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Observation search failed.");
@@ -1999,23 +2090,43 @@ declare const ASSETS: {
       const nextFixture = await SkyShift.makeLiveFixture(data.observations, ra, dec, fov, searchController.signal, (done, total) => {
         status.textContent = `Downloading ${done} of ${total} observations…`;
       }, cacheSelect.value !== "none");
+      let initialFixture = nextFixture;
+      let restoredWave: { min: number; max: number } | null = null;
+      if (waveRange) {
+        try {
+          status.textContent = "Checking wavelengths…";
+          const filtered = await SkyShift.filterWavelength(nextFixture, waveRange[0], waveRange[1], searchController.signal);
+          initialFixture = filtered.fixture;
+          restoredWave = { min: waveRange[0], max: waveRange[1] };
+          get("wave-status").textContent = `${filtered.fixture.headers.length} exposures overlap ${waveRange[0]}–${waveRange[1]} μm; ${filtered.unavailable} had unavailable wavelength metadata. Dates without matching exposures are omitted.`;
+        } catch (error) {
+          get("wave-status").textContent = error instanceof Error ? error.message : String(error);
+        }
+      } else {
+        get("wave-status").textContent = "";
+      }
       busy = false;
       const previousFrame = frame;
-      frame = Math.max(0, Math.min(Number.isInteger(initialFrame) ? initialFrame : 0, nextFixture.dates.length - 1));
-      if (!await load(nextFixture)) {
+      frame = preserveFrame && Number.isInteger(initialFrame) && initialFrame >= 0 ? initialFrame : 0;
+      if (!await load(initialFixture)) {
         frame = previousFrame;
         return;
       }
-      if (!savedAsof) frame = Number(referenceSelect.value) || 0;
+      if (!savedAsof && !preserveFrame) frame = Number(referenceSelect.value) || 0;
       fullBandFixture = nextFixture;
-      wavelengthSelection = null;
+      wavelengthSelection = restoredWave;
       clearCatalogues();
-      get("wave-status").textContent = "";
       isBundled = false;
       currentSelection = { ra, dec, band, fov, asof: new Date(cutoffMs).toISOString(), ...(from && to ? {from, to} : {}) };
+      loadedOptions = { band, fov, from, to };
       marker.checked = false;
       const target = named ?? SkyShift.TARGETS.find((item) => item.ra === ra && item.dec === dec);
       setFieldInfo(target?.label ?? `${ra.toFixed(5)}, ${dec.toFixed(5)}`, `RA ${ra.toFixed(6)}° · Dec ${dec.toFixed(6)}° · Band ${band} · ${fov}′ field`, band, target?.id);
+      const earlierDeep = (data.collections as Array<{ name: string; status: string; fromMjd: number; count?: number }>)
+        .filter((item) => item.name.endsWith("_deep") && item.status !== "unavailable" && item.fromMjd > startMjd + 0.01 && ((item.count ?? 0) > 0 || item.status === "truncated"));
+      setEarlierWindow(earlierDeep.length
+        ? { ra, dec, band, fov, from, to, endMjd: Math.max(...earlierDeep.map((item) => item.fromMjd)), target }
+        : null);
       hideHere();
       frameField();
       commitView();
@@ -2125,6 +2236,7 @@ declare const ASSETS: {
     worker?.terminate();
     if (workerURL) URL.revokeObjectURL(workerURL);
     workerURL = undefined;
+    revokeSpectrumUrl();
   });
 
   // ------------------------------------------------------------- start ----
@@ -2142,35 +2254,50 @@ declare const ASSETS: {
     if (mark?.length === 2 && mark.every(Number.isFinite)) trackAt(mark[0], mark[1]);
   }
   const sharedRa = params.get("ra"), sharedDec = params.get("dec");
-  const restoreWavelength = async () => {
-    const min = params.get("waveMin"), max = params.get("waveMax");
-    if (min !== null && max !== null) {
-      get<HTMLInputElement>("wave-min").value = min; get<HTMLInputElement>("wave-max").value = max;
-      await applyWavelength();
+  const initialWaveMin = params.get("waveMin"), initialWaveMax = params.get("waveMax");
+  const initialWaveRange = SkyShift.parseWaveRange(initialWaveMin, initialWaveMax);
+  if (initialWaveMin !== null && initialWaveMax !== null) {
+    get<HTMLInputElement>("wave-min").value = initialWaveMin;
+    get<HTMLInputElement>("wave-max").value = initialWaveMax;
+  }
+  const loadBundledInitial = async (): Promise<boolean> => {
+    if (initialWaveRange) {
+      try {
+        const filtered = await SkyShift.filterWavelength(ASSETS.fixture, initialWaveRange[0], initialWaveRange[1], new AbortController().signal);
+        wavelengthSelection = { min: initialWaveRange[0], max: initialWaveRange[1] };
+        get("wave-status").textContent = `${filtered.fixture.headers.length} exposures overlap ${initialWaveRange[0]}–${initialWaveRange[1]} μm; ${filtered.unavailable} had unavailable wavelength metadata. Dates without matching exposures are omitted.`;
+        return await load(filtered.fixture);
+      } catch (error) {
+        get("wave-status").textContent = error instanceof Error ? error.message : String(error);
+      }
     }
+    return await load();
   };
   if (sharedRa !== null && sharedDec !== null) {
     if (params.get("band")) bandSelect.value = params.get("band")!;
     if (params.get("fov")) fovSelect.value = params.get("fov")!;
-    if (params.get("from")) get<HTMLInputElement>("date-from").value = params.get("from")!;
-    if (params.get("to")) get<HTMLInputElement>("date-to").value = params.get("to")!;
+    if (params.get("from")) dateFromInput.value = params.get("from")!;
+    if (params.get("to")) dateToInput.value = params.get("to")!;
     let ra: number, dec: number;
     try {
       ra = SkyShift.parseCoordinate(sharedRa, "ra");
       dec = SkyShift.parseCoordinate(sharedDec, "dec");
     } catch (error) {
       status.textContent = `Shared link: ${error instanceof Error ? error.message : String(error)}`;
-      void load().then(applyInitialCamera);
+      void loadBundledInitial().then(applyInitialCamera);
       return;
     }
     query.value = `${ra.toFixed(5)}, ${dec.toFixed(5)}`;
-    void searchFromOptions(ra, dec, params.get("asof") ?? undefined).then(() => {
-      if (currentSelection) { applyInitialCamera(); return restoreWavelength().then(restoreMark); }
+    void searchFromOptions(ra, dec, params.get("asof") ?? undefined, undefined, false, {
+      waveRange: initialWaveRange,
+      preserveFrame: sharedView,
+    }).then(() => {
+      if (currentSelection) { applyInitialCamera(); restoreMark(); return; }
       // The shared field failed to load: show the bundled example, keep the reason visible.
       const failure = status.textContent ?? "";
       return load().then(() => { applyInitialCamera(); status.textContent = failure; });
     });
   } else {
-    void load().then(() => { applyInitialCamera(); maybeShowHint(); return restoreWavelength(); }).then(restoreMark);
+    void loadBundledInitial().then(() => { applyInitialCamera(); maybeShowHint(); restoreMark(); });
   }
 })();

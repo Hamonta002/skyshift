@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { parseCsv, searchCatalogue } from './catalogue.mjs';
-import { validateQuality, handleQuality } from './quality.mjs';
+import { validateQuality, handleQuality, resolvePython } from './quality.mjs';
 import { parseChannelProperties, handleChannels } from './channels.mjs';
 const require = createRequire(import.meta.url);
 const sky = require('../dist/archive.cjs');
@@ -43,9 +43,53 @@ assert.ok(Math.abs(origin[0] - fixture.half) < 1e-8 && Math.abs(origin[1] - fixt
 const moved = sky.cataloguePixel(fixture,central,2017);
 assert.ok(moved[1] > origin[1]);
 assert.ok(Math.abs((moved[1] - origin[1]) - 3.6 / fixture.scale) < 0.2);
+
+// Target proper-motion metadata supports Barnard's Star, Epsilon Indi B, and WISE 0855.
+for (const [id, minPmMas] of [['wise0855', 8000], ['barnard', 10000], ['epsindiB', 4000]]) {
+  const target = sky.TARGETS.find((t) => t.id === id);
+  assert.ok(target && Math.hypot(target.pmra, target.pmdec) > minPmMas, `${id} has high proper motion`);
+  assert.equal(sky.findTargetAt(target.ra, target.dec)?.id, id);
+  const pos2026 = sky.targetPosition(target, 51544.5 + 26 * 365.25);
+  assert.ok(sky.separation(pos2026[0], pos2026[1], target.ra, target.dec) < 0.1, `${id} J2000->2026.0 consistency`);
+  const pos2025 = sky.targetPosition(target, 51544.5 + 25 * 365.25);
+  assert.ok(sky.separation(pos2025[0], pos2025[1], pos2026[0], pos2026[1]) > 4, `${id} moves across epochs`);
+}
+
+// quickSpectrum tracks proper motion of Barnard's Star using target metadata (not just WISE 0855).
+{
+  const barnard = sky.TARGETS.find((t) => t.id === 'barnard');
+  const mjd = 60900;
+  const [raNow, decNow] = sky.targetPosition(barnard, mjd);
+  const size = 41, half = 20, scale = 6.15;
+  const [dxArcsec, dyArcsec] = [
+    (raNow - barnard.ra) * Math.cos(barnard.dec * Math.PI / 180) * 3600,
+    (decNow - barnard.dec) * 3600,
+  ];
+  const srcX = half - dxArcsec / scale, srcY = half + dyArcsec / scale;
+  const pixels = new Float32Array(size * size).fill(1);
+  for (let py = 0; py < size; py++) for (let px = 0; px < size; px++) {
+    if (Math.hypot(px - srcX, py - srcY) <= 1.5) pixels[py * size + px] = 100;
+  }
+  const b64 = Buffer.from(pixels.buffer).toString('base64');
+  const testFix = {
+    id: 'barnard-pm-test',
+    ra0: barnard.ra, dec0: barnard.dec, half, scale,
+    dates: ['2025-08-13'], visitSizes: [1],
+    headers: [{
+      id: 'b1', size, x0: 0, y0: 0, crval: [barnard.ra, barnard.dec], crpix: [half + 1, half + 1],
+      cdelt: [-scale / 3600, scale / 3600], pc: [1, 0, 0, 1], a: {}, b: {}, ap: {}, bp: {},
+      mjd, wavelength: 4.6, bandwidth: 0.05, productKey: 'dr1/level2/test/6/b.fits',
+    }],
+    pixels: b64,
+  };
+  const spec = await sky.quickSpectrum(testFix, new AbortController().signal);
+  assert.equal(spec.length, 1);
+  assert.ok(spec[0].flux > 0.1, `Barnard aperture photometry tracks moving star (flux=${spec[0].flux})`);
+}
 await assert.rejects(() => searchCatalogue(new URLSearchParams({catalogue:'gaia',ra:'1',dec:'2',fov:'999'}), () => {throw Error('unexpected fetch')}));
 console.log('Exposure, wavelength, quality and catalogue checks passed (offline fixtures).');
 
+assert.ok(['python', 'python3'].includes(resolvePython().toLowerCase().replace(/\.exe$/, '')) || Boolean(process.env.SKYSHIFT_PYTHON));
 const flagParams = new URLSearchParams({key:'dr1/level2/test.fits',x:'100',y:'50'});
 assert.deepEqual(validateQuality(flagParams), {key:'dr1/level2/test.fits',x:100,y:50});
 assert.throws(() => validateQuality(new URLSearchParams({key:'../../etc/passwd',x:'1',y:'1'})));

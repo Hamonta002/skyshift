@@ -1,8 +1,22 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 const script = fileURLToPath(new URL('./read-flags.py', import.meta.url));
 const cache = new Map();
 let running = 0;
+let cachedPython;
+export function resolvePython() {
+  if (process.env.SKYSHIFT_PYTHON) return process.env.SKYSHIFT_PYTHON;
+  if (cachedPython) return cachedPython;
+  const candidates = process.platform === 'win32' ? ['python', 'python3'] : ['python3', 'python'];
+  for (const cmd of candidates) {
+    if (spawnSync(cmd, ['--version'], { stdio: 'ignore' }).status === 0) {
+      cachedPython = cmd;
+      return cmd;
+    }
+  }
+  cachedPython = candidates[0];
+  return cachedPython;
+}
 export function validateQuality(params) {
   const key = params.get('key') ?? '', xs = params.get('x'), ys = params.get('y');
   if (!/^[a-z0-9_]+\/level2\/[A-Za-z0-9_./-]+\.fits$/.test(key) || key.includes('..')) throw Error('Invalid product key.');
@@ -13,7 +27,7 @@ export function validateQuality(params) {
 }
 function execute({key, x, y}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.env.SKYSHIFT_PYTHON || 'python3', [script, key, String(x), String(y)], {stdio:['ignore','pipe','pipe']});
+    const child = spawn(resolvePython(), [script, key, String(x), String(y)], {stdio:['ignore','pipe','pipe']});
     let output = '', errors = '';
     const timer = setTimeout(() => { child.kill(); reject(Error('Flag inspection timed out.')); }, 45000);
     child.stdout.on('data', chunk => { output += chunk; if (output.length > 20000) child.kill(); });

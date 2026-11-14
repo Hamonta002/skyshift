@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 const sky = require('../dist/archive.cjs');
 const worker = require('../dist/worker.cjs');
 
 const fixtures = { wise0855: require('../dist/fixture.json') };
 for (const id of ['barnard', 'epsindiB', 'rwaur', 'rdra']) {
-  const path = new URL(`../reference/fixtures/examples/${id}.json`, import.meta.url);
-  if (existsSync(path)) fixtures[id] = require(path.pathname).fixture;
+  const path = fileURLToPath(new URL(`../reference/fixtures/examples/${id}.json`, import.meta.url));
+  if (existsSync(path)) fixtures[id] = JSON.parse(readFileSync(path, 'utf8')).fixture;
 }
 const angleDiff = (a, b) => Math.abs(((a - b + 540) % 360) - 180);
 

@@ -181,6 +181,46 @@ namespace SkyShift {
     return `${camera.ra.toFixed(6)},${camera.dec.toFixed(6)},${(Math.round(camera.z * 100) / 100).toString()}`;
   }
 
+  export interface SearchOptionsState {
+    band: number;
+    fov: number;
+    from: string;
+    to: string;
+  }
+
+  export function searchOptionsDiffer(a: SearchOptionsState, b: SearchOptionsState): boolean {
+    return a.band !== b.band || a.fov !== b.fov || a.from !== b.from || a.to !== b.to;
+  }
+
+  export function searchTimeBounds(
+    from = "",
+    to = "",
+    asof?: string,
+    endMjd?: number,
+    nowMs = Date.now(),
+  ): { fromMjd: number; toMjd: number; cutoffMs: number } {
+    const cutoffMs = asof ? Date.parse(asof) : nowMs;
+    if (!Number.isFinite(cutoffMs) || cutoffMs > nowMs + 86400000) throw new Error("The shared cutoff date is invalid.");
+    const startMs = from ? Date.parse(`${from}T00:00:00Z`) : (60789 - 40587) * 86400000;
+    const endMs = endMjd !== undefined ? Math.min((endMjd - 40587) * 86400000, cutoffMs)
+      : to ? Math.min(Date.parse(`${to}T23:59:59Z`), cutoffMs) : cutoffMs;
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs > endMs) {
+      throw new Error("The date range starts after the observation cutoff.");
+    }
+    return {
+      fromMjd: startMs / 86400000 + 40587,
+      toMjd: endMs / 86400000 + 40587,
+      cutoffMs,
+    };
+  }
+
+  export function parseWaveRange(minRaw: string | null, maxRaw: string | null): [number, number] | null {
+    if (minRaw === null || maxRaw === null || minRaw.trim() === "" || maxRaw.trim() === "") return null;
+    const min = Number(minRaw), max = Number(maxRaw);
+    if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
+    return [min, max];
+  }
+
   /** Legacy `zoom=1|2|4` (Fit multipliers) maps onto map levels. */
   export function legacyZoom(value: string | null): number | null {
     const zoom = Number(value);

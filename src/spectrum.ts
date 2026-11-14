@@ -37,19 +37,28 @@ namespace SkyShift {
   }
   export interface SpectrumPoint { wavelength: number; bandwidth: number; flux: number; date: string; mjd: number | null; productKey: string | null; }
 
-  export async function quickSpectrum(fixture: PackedFixture, signal: AbortSignal): Promise<SpectrumPoint[]> {
+  export type SpectrumTarget = Pick<Target, "ra" | "dec" | "raJ2000" | "decJ2000" | "pmra" | "pmdec" | "epoch">;
+
+  export async function quickSpectrum(fixture: PackedFixture, signal: AbortSignal, target?: SpectrumTarget): Promise<SpectrumPoint[]> {
     const exposures = decodeFixture(fixture);
     const result: SpectrumPoint[] = [];
+    const astrometry = target ?? findTargetAt(fixture.ra0, fixture.dec0);
     let index = 0;
     for (let visit = 0; visit < fixture.visitSizes.length; visit++) {
       for (let i = 0; i < fixture.visitSizes[visit]; i++, index++) {
         if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
         const exposure = exposures[index], h = exposure.header;
-        let ra = fixture.ra0, dec = fixture.dec0;
-        if (Math.abs(ra - 133.759765) < 1e-5 && Math.abs(dec + 7.242186) < 1e-5 && h.mjd !== undefined) {
-          const year = 2000 + (h.mjd - 51544.5) / 365.25;
-          ra += (year - 2026) * -8123.7 / 3600000 / Math.cos(dec * Math.PI / 180);
-          dec += (year - 2026) * 673.2 / 3600000;
+        let ra = target?.ra ?? fixture.ra0, dec = target?.dec ?? fixture.dec0;
+        if (h.mjd !== undefined && astrometry && astrometry.pmra !== undefined && astrometry.pmdec !== undefined) {
+          [ra, dec] = targetPosition({
+            ra,
+            dec,
+            raJ2000: astrometry.raJ2000,
+            decJ2000: astrometry.decJ2000,
+            pmra: astrometry.pmra,
+            pmdec: astrometry.pmdec,
+            epoch: astrometry.epoch,
+          }, h.mjd);
         }
         const [x, y] = worldToPixel(exposure.wcs, ra, dec);
         const cx = x - h.x0, cy = y - h.y0;
