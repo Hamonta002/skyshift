@@ -1,10 +1,10 @@
 # SkyShift implementation plan
 
-Project root is `/home/crow/planet`. This plan combines the archive findings in [Revision 2](SPHEREx_Project_Plan.md) with the processing, caching and scientific checks in [v1](SPHEREx_Project_Plan.v1.md). Use this file for implementation decisions and the earlier documents for measurements and design history. The interface now follows the Stellarium-inspired design below.
+Project root is `/home/crow/planet`. This plan combines the archive findings in [Revision 2](SPHEREx_Project_Plan.md) with the processing, caching and scientific checks in [v1](SPHEREx_Project_Plan.v1.md). Use this file for implementation decisions and the earlier documents for measurements and design history. The interface now follows the full-screen sky-map design below.
 
 ## How to hand off the work
 
-For the next UI build, start with [Task 7A](#task-7a-build-the-stellarium-inspired-wise-0855-prototype). It uses the bundled real WISE 0855 images and can proceed without archive access. Continue with Task 7B to integrate live, shared and embedded views. For the rest of the project, use each numbered task's pass criteria to identify the remaining work and follow its dependencies.
+For the next UI build, start with [Task 7A](#task-7a-build-the-sky-map-wise-0855-prototype). It uses the bundled real WISE 0855 images and can proceed without archive access. Continue with Task 7B to integrate live, shared and embedded views. For the rest of the project, use each numbered task's pass criteria to identify the remaining work and follow its dependencies.
 
 Copy this prompt and replace the task number when moving on.
 
@@ -90,7 +90,7 @@ Keep one parsed view state. Serialize these settings to the URL.
 | `view` | `stack`, `exposures`, `blink`, `difference` or `sum`. Accept `diff` as an alias for `difference`. A restored Blink view opens paused. |
 | `frame` | One-based selected frame index. Clamp after the sequence resolves. Timer ticks update only the visible frame. |
 | `a`, `b` | One-based comparison inputs within the resolved sequence. Legacy `reference` is zero-based and supplies A when `a` is absent. A legacy Difference or Sum link uses `frame` for B when `b` is absent. |
-| `zoom` | Optional centred zoom multiplier of `1`, `2` or `4`. Missing or invalid values use `1` (Fit). |
+| `at` | Optional map view as `ra,dec,z`: the view centre in decimal ICRS degrees and the zoom level (see Interface). Omitted at the default framing. Legacy `zoom=1`, `2` or `4` maps to z = 3, 4 or 5. |
 | `stretch` | `balanced`, `faint` or `linear`. Missing or invalid values use `balanced`. |
 | `asof` | ISO UTC cutoff for selecting observations. Convert it to an upper MJD bound when searching. |
 | `from`, `to` | Optional paired UTC calendar dates (`YYYY-MM-DD`). Include the entire `to` date before applying the `asof` cutoff. |
@@ -254,46 +254,46 @@ The archive measurements in Revision 2 estimate approximately 26 MB for one 5′
 
 ## Interface
 
-Use a Stellarium-inspired workspace with a large, fixed sky image, controls at the edges and an observation timeline. The first walkthrough is **open WISE 0855 → inspect visits A and B → Blink → check Difference**. Keep the data canvas in the existing TypeScript and Canvas renderer. Use a near-black sky surface, charcoal controls, grayscale infrared images and one cool accent for focus and selection. Reserve a labelled diverging palette for signed differences.
+The interface is a full-screen sky map in the style of Google Maps. The whole viewport is a pannable, zoomable canvas, with controls floating over it. The first walkthrough is **open WISE 0855 → inspect visits A and B → Blink → check Difference**, and the map must keep that path one tap away. Keep the data canvas in the existing TypeScript and Canvas renderer. Use a near-black sky, charcoal floating cards, grayscale infrared images and one cool accent for focus and selection. Reserve a labelled diverging palette for signed differences. Outside the loaded field, draw only a labelled RA/Dec grid and the field's outline. Do not show survey tiles that could be mistaken for SPHEREx pixels.
 
-### Desktop and phone wireframes
+### Map, default view and navigation
 
-For widths of 900 CSS px and above, use the desktop arrangement. Seek a full-viewport workspace where the main image, controls and timeline fit together. The image occupies the largest available area and preserves its aspect ratio. Let the page scroll at short viewport heights.
+- The map uses a gnomonic projection about the view centre, with north up and east left. The zoom level `z` is log2(CSS px per aligned-grid pixel), so whole-number levels keep pixel edges crisp. The range is −3 to 6. The field image, grid, scale bar, catalogue markers and pixel readout all come from the same projection.
+- The default view is the WISE 0855 field centre (RA 133.759765°, Dec −7.242186°) at z = 3. That is 8 CSS px per 3.075″ pixel, which makes the 2.1′ field a 328 px square. A newly loaded field opens centred in the uncovered map area, at z = 3 or at the largest whole level that fits a larger field. The uncovered area is the viewport minus the top bar, the dock, an open panel, and the control column on phones.
+- Dragging pans, and the grabbed sky point stays under the pointer. Wheel, trackpad pinch and two-finger pinch zoom at the pointer. Double-click or double-tap zooms in, and Shift + double-click zooms out. Zoom ± and Recenter stay visible on every device as single-pointer alternatives.
+- Wayfinding: the field outline is always drawn, and below about 24 px it becomes a named pin. When the field is out of view, an edge chip points back to it and shows the distance. Moving the map never replaces data. **Search this area** appears once the view centre is more than one field width from the loaded field, and it submits that centre through the existing search.
+- A click or tap opens a position card. It shows sexagesimal and decimal coordinates and, inside the field, the pixel value in MJy/sr, with **Center here**, **Details**, **Search here** and **Copy**. The card is also the single-pointer alternative to dragging.
+- Keyboard, with the map focused: arrows pan (Shift pans further), `+` and `−` zoom, `0` recenters, Space plays or pauses, `,` and `.` step frames, `B` toggles Blink, `D` toggles Difference, `I` opens details, `/` focuses search, `?` lists shortcuts. Esc closes the top layer, then pauses. In the thumbnail strip, ← and → step through visits.
 
-| Region | Left | Centre | Right |
-|---|---|---|---|
-| Header | SkyShift · Examples | Object or coordinate search · Band · Field | Share |
-| Sky viewport | Field name · actual field size · detector | SPHEREx image · active date · orientation and angular scale | Zoom · Stretch · Layers · Inspect |
-| Timeline | Play visits · Previous · Next | Chronological visit thumbnails with dates, exposure counts and A/B badges | A selector · B selector · Blink · Difference |
-| Inspector, open | | Image remains visible | Frame metadata · Layers · Spectrum · Evidence · Diagnostics |
+### Desktop and phone layout
 
-Below 900 CSS px, stack these regions in order. At phone widths, open the inspector as a bottom sheet. Aim for touch targets of at least 44 × 44 CSS px. Only the timeline strip scrolls horizontally.
+| Region | 900 CSS px and wider | Phones |
+|---|---|---|
+| Search | A top-left pill with one box for a target name or RA, Dec. Below it: a live preview of the parsed input, suggestions, and an options row (band, field size, dates). Example chips sit to its right. | Full-width pill, with the chips scrolling beneath it. |
+| Top right | Keyboard shortcuts and Share. | Share. |
+| Place panel | A left panel opened by the brand button, **Details** or `I`. It shows the name, coordinates, actual field size and band; This frame and View; Wavelength; Spectrum; Quality and provenance; Diagnostics. The panel is non-modal, so the map stays usable, and opening it keeps the field visible. | A 76 dvh bottom sheet. |
+| Bottom centre | The timeline dock: Play, Previous and Next; visit thumbnails with date, count, shallow mark and A/B badges; A and B selectors; **Blink**; **Difference**. Collapsing hides the thumbnails and selectors but keeps the actions. | A full-width bottom dock. |
+| Bottom left | Layers: stretch, grid, predicted position, Gaia DR3, CatWISE2020. | In the right-edge button column. |
+| Bottom right | Recenter and zoom ±, then a strip with orientation, scale bar, cursor readout and attribution. | Right-edge column; the strip sits above the dock. |
+| Floating | The field label with the active date and A/B; the Difference legend at top right; the status toast with Cancel above the dock; a one-time hint pointing at Blink. | The toast moves below the search. |
 
-| Order | Phone layout |
-|---|---|
-| 1 | SkyShift · Examples · Search · Share. Search expands to coordinates, band and field controls. |
-| 2 | Sky image · date and field size · north/east and scale · Zoom and Inspect. Stretch and Layers are reachable from Inspect. |
-| 3 | Swipeable visit thumbnails. Keep dates and exposure counts visible without hover. |
-| 4 | A and B selectors · Blink · Difference. Place Play visits and stepping in the same timeline region. |
-| 5 | Inspector sheet when open. Close or Escape returns focus to its opener. |
-
-Show the aligned image grid's actual angular extent. Fit centres the full frame. Zoom cycles through Fit, 2× and 4× at the fixed field centre. Preserve pixel edges at enlarged scales and derive the scale bar and catalogue-marker placement from the same image transform. The desktop inspector and phone sheet must preserve the field centre. Exact sizing and spacing can be adjusted in the prototype while retaining this arrangement.
+On coarse pointers, touch targets are at least 44 × 44 CSS px. The page itself never scrolls; only the thumbnail strip, the chips and the panel do. Informational overlays (toast, legend, field label) let touches through to the map. Exact sizing and spacing can be adjusted while retaining this arrangement.
 
 ### Timeline, Blink and Difference
 
 - Open paused. Show real WISE 0855 data at its bundled size of roughly 2.1′. Make the three visits legible as May 2025 (3 exposures, shallow), Oct–Dec 2025 (21) and Apr–May 2026 (21). Start with the October–December visit visible and assigned to A, and the April–May visit assigned to B. Each thumbnail uses the sequence stretch; its accessible name includes the date, count and any A or B assignment. Clicking a thumbnail pauses playback and previews that visit. Explicit A and B selectors assign comparison inputs.
 - For another sequence, select the latest two loaded visits with at least five contributing exposures when there are two. Otherwise select the latest two available visits. Order the default pair from earlier to later. An explicitly assigned shallow input remains usable and visibly marked. Reopening a share link takes precedence over defaults. After a band, time or wavelength change, retain an assignment only if that same frame is still available in the current field and detector; otherwise resolve defaults from the new sequence.
-- **Play visits** loops through the full sequence at 850 ms per frame. **Blink** immediately shows A, then alternates A and B every 500 ms until paused. Use a single playback timer. Starting either playback mode stops the other. Leaving the page, opening Inspect, changing inputs, changing display settings, entering Difference or pressing Esc pauses playback. Loading a shared view or a new field keeps playback paused. Use Space for play/pause when the canvas has focus and arrow keys for stepping while paused. Keep native keyboard behavior in inputs and selectors.
+- **Play visits** loops through the full sequence at 850 ms per frame. **Blink** immediately shows A, then alternates A and B every 500 ms until paused. Use a single playback timer. Starting either playback mode stops the other. Leaving the page, opening the place panel, changing inputs, changing display settings, entering Difference or pressing Esc pauses playback. Panning and zooming do not pause, so a visitor can zoom into a source while it blinks. Loading a shared view or a new field keeps playback paused. Keep native keyboard behavior in inputs and selectors.
 - Keep plate scale, field centre, zoom and stretch identical across both Blink frames. Show the active A or B and its date in the viewport without continuous screen-reader announcements. Hide epoch-dependent prediction and catalogue markers during active Blink so they do not introduce apparent movement, and restore those layers when paused. All motion starts from an explicit action. Avoid animated transitions between image frames.
-- **Difference** uses `B − A` on the common finite pixels of compatible frames from the same loaded sequence. Show both dates and a symmetric signed scale with labelled negative, zero and positive values. Returning to Blink waits for a new start action. Keep Sum available as `A + B` in the comparison controls under Inspect. If fewer than two distinct usable inputs exist, show a still or single-frame sequence and explain why compare actions are disabled. Apply the scientific processing and version-compatibility rules above.
+- **Difference** uses `B − A` on the common finite pixels of compatible frames from the same loaded sequence. Show both dates and a symmetric signed scale with labelled negative, zero and positive values. Returning to Blink waits for a new start action. Keep Sum available as `A + B` in the View control in the place panel. If fewer than two distinct usable inputs exist, show a still or single-frame sequence and explain why compare actions are disabled. Apply the scientific processing and version-compatibility rules above.
 - Use **Balanced** by default with the current shared stretch limits and current asinh curve (`asinh(16x) / asinh(16)` for normalized `x`). **Faint** uses the same limits and replaces 16 with 64. **Linear** uses linear mapping across those limits. Apply the active stretch to both inputs and all thumbnails. Draw Blink, frame stepping and display changes from loaded frames without new archive requests or alignment work. Regenerate thumbnails when the sequence or stretch changes. Commit URL changes on user actions.
 
-### Search, inspector and release scope
+### Search, place panel and release scope
 
 - Search accepts the existing presets and manual coordinates. Keep the actual loaded field size visible even when the form requests a different size. A successful request opens a paused sequence. During loading use an actionable status such as “Loading 12 of 60 observations”. Keep the previous pixels and their own labels visible during a failed or cancelled replacement and show the new request's error separately.
-- The inspector groups wavelength coverage, exposure counts, quality flags and source files with the relevant frame or comparison. It also hosts catalogue toggles, spectrum, metadata export and advanced display options. Keep cache controls, engine selection and benchmarks in Diagnostics. Start the predicted-position marker off in the WISE demo and allow visitors to enable it under Layers.
+- The place panel groups wavelength coverage, exposure counts, quality flags and source files with the relevant frame or comparison. It also hosts catalogue toggles, spectrum, metadata export and advanced display options. Keep cache controls, engine selection and benchmarks in Diagnostics. Start the predicted-position marker off in the WISE demo and allow visitors to enable it under Layers.
 - Use the same comparison state for the compact embed. Show image, date, timeline, Blink, Difference and a provenance link. Hide the search form and Diagnostics from the compact layout. Keep the existing app, search and data contracts as the integration path.
-- Add **Find my field** with optional Aladin Lite context in Task 12. Let users pan the context view, then use **Load this field** to submit its centre and chosen field size through the existing search. A map movement alone leaves the current sequence in place.
+- The map's **Search this area** replaces the separate Find my field context. An optional survey backdrop (for example Aladin Lite or HiPS tiles) remains a Task 12 option. It must be off by default and labelled as not SPHEREx data.
 - Task 7A proves the interface with bundled WISE 0855. Task 7B connects the complete workspace to live requests, preset restoration and embeds. The public release still requires all five real example bundles and the checks in Task 15. Calibrated measurements and a cutout gateway follow the separate extension criteria in Tasks 16 and 17.
 
 ## Implementation tasks
@@ -361,16 +361,27 @@ Tasks 1–8 build the first public version. Tasks 9–15 complete and verify the
 
 **Pass when:** repeat execution of the same recipe skips image fetches and compute, a stretch change reuses the numerical data, a changed input or algorithm misses the result cache, and two identical in-flight jobs share work. Check quota/cancel handling and eviction in the cache tests. Verify actual IndexedDB reads across a page reload in Task 15.
 
-### Task 7A. Build the Stellarium-inspired WISE 0855 prototype
+### Task 7A. Build the sky-map WISE 0855 prototype
 
-**Depends on:** the bundled Task 1 fixture and existing alignment and arithmetic helpers. **Files:** `src/index.html`, `src/style.css`, `src/viewer.ts` and a small playback state module if it helps isolate state transitions.
+**Depends on:** the bundled Task 1 fixture and existing alignment and arithmetic helpers. **Files:** `src/index.html`, `src/style.css`, `src/viewer.ts`, `src/map.ts` (projection and camera) and `scripts/check-map.mjs`.
 
-1. Build the desktop viewport and phone layout from the wireframes. Keep the search and existing tools accessible. Surface the actual WISE field size, orientation, scale and visit metadata beside the image.
+1. Build the full-screen map, floating controls and phone layout described in the Interface section. Keep the search and existing tools accessible. Show the actual WISE field size, orientation, scale and visit metadata on the map and in the place panel.
 2. Generate thumbnails from the aligned visit frames. Add A/B selectors and connect Play visits, Blink and Difference to the same loaded sequence. Render the legacy Difference and Sum modes with the existing arithmetic. Handle the single-visit state.
-3. Add centred zoom, shared stretch, and responsive inspector behavior. Make the inspector and comparison controls operable with keyboard and touch. Preserve engine and cache settings in Diagnostics.
+3. Add map navigation (drag, zoom at the pointer, keyboard, Recenter, off-screen chip, Search this area), shared stretch, and the non-modal place panel and phone sheet. Make the panel and comparison controls operable with keyboard and touch. Preserve engine and cache settings in Diagnostics.
 4. Run `npm run build` and `npm test`. On an HTTP origin, check at 1440 × 900 and 390 × 844 CSS px with the bundled data. Record the walkthrough and any unavailable browser verification in the Task 15 results.
 
-**Pass when:** opening WISE 0855 shows Oct–Dec 2025 paused with A and B set to its two full visits. The timeline shows all three dates and counts and marks the first visit shallow. Blink shows only A and B at a common scale and stretch without additional pixel fetches or worker alignment. Difference shows both dates and `B − A`; swapping the pair reverses the sign. Play loops all three visits, and pausing or inspecting leaves one steady frame. Verify keyboard operation, readable phone controls and no page-wide horizontal scroll. A fixture-only run can satisfy Task 7A.
+**Pass when:** opening WISE 0855 shows the field centre at z = 3 (a 328 CSS px field) and Oct–Dec 2025 paused, with A and B set to its two full visits. The timeline shows all three dates and counts and marks the first visit shallow. Blink shows only A and B at a common scale and stretch without additional pixel fetches or worker alignment. Difference shows both dates and `B − A`; swapping the pair reverses the sign. Play loops all three visits, and pausing or inspecting leaves one steady frame. Verify keyboard operation, readable phone controls and no page-wide horizontal scroll. A fixture-only run can satisfy Task 7A.
+
+**Status (2026-11-14):** The map interface is implemented. `npm test` passes, including `scripts/check-map.mjs`, which checks projection round trips up to ±89°, zoom and drag anchoring, the 328 px default field, grid spacing, `at=` parsing and the search parser. A headless Chromium walkthrough over CDP at 1440×900 and 390×844 passed 35 checks:
+
+- the paused default with A and B set, and the shallow mark;
+- wheel zoom keeping the sky under the cursor, drag, the off-screen chip and Search this area;
+- Space, B and D; Blink alternating A and B; Difference reversing sign when A and B are swapped;
+- the panel's Escape focus return;
+- no page scroll and 44 px touch targets;
+- tap and pinch on the phone layout.
+
+Still pending: a hand test in physical desktop and phone browsers, the live IRSA/S3 search, and the Play loop timing.
 
 ### Task 7B. Connect the workspace to live, shared and embedded views
 

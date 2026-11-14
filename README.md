@@ -23,9 +23,10 @@ The browser also needs direct cross-origin range access to the public SPHEREx
 S3 bucket for image pixels. Deploying this application publicly requires a host
 that runs the search route and verification of cross-origin access.
 
-The viewer accepts decimal degrees or complete sexagesimal RA and declination,
-selectable detector band and field of view. The examples fill the search form;
-only WISE 0855 is bundled offline. The live path queries IRSA for observations,
+The viewer is a full-screen sky map. It opens on WISE 0855 at 8 screen pixels per image pixel. Drag to pan, and scroll or pinch to zoom. Click any point for its coordinates and pixel value, and press `?` for keyboard shortcuts. Moving the map never replaces the loaded data; use **Search this area** to load a new field. The search box takes an example name, or RA and Dec. It accepts decimal degrees or complete sexagesimal RA and declination,
+with the detector band, field of view and dates under search options. The example chips open a bundled example
+directly; an example that is not bundled in the build is fetched through the live search. Only WISE 0855 is
+bundled offline. The live path queries IRSA for observations,
 downloads a bounded sample, and computes visit stacks locally. It includes
 individual exposures, visual sum/difference, centre-wavelength filtering, a preliminary
 spectrum, shareable coordinates, and JSON metadata export. Nominal channel centres

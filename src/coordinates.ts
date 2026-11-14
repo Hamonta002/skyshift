@@ -26,6 +26,45 @@ namespace SkyShift {
     return kind === "ra" && result === 360 ? 0 : result;
   }
 
+  export type Query = { kind: "target"; target: Target } | { kind: "coordinates"; ra: number; dec: number };
+
+  const simplify = (text: string) => text.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]/g, "");
+
+  /** Targets whose label or id starts with the typed text (ignoring case and punctuation). */
+  export function matchTargets(text: string): Target[] {
+    const key = simplify(text);
+    if (!key) return [];
+    return TARGETS.filter((target) => simplify(target.label).startsWith(key) || simplify(target.id).startsWith(key));
+  }
+
+  /**
+   * One search box: a bundled target name, or RA and Dec separated by a comma
+   * or by whitespace (each part accepts the forms of `parseCoordinate`).
+   */
+  export function parseQuery(input: string): Query {
+    const text = input.trim().replaceAll("−", "-");
+    if (!text) throw new Error("Type a target name, or RA and Dec.");
+    const exact = TARGETS.find((target) => simplify(target.label) === simplify(text) || simplify(target.id) === simplify(text));
+    if (exact) return { kind: "target", target: exact };
+    // Letters other than sexagesimal unit markers mean a name.
+    if (/[a-z]/i.test(text.replace(/\d+(?:\.\d+)?\s*[hmsd]/gi, ""))) {
+      const [match] = matchTargets(text);
+      if (match) return { kind: "target", target: match };
+      throw new Error("Name search covers the five examples. Enter RA and Dec for any other field.");
+    }
+    let parts = text.includes(",") ? text.split(",") : text.split(/\s+/);
+    if (!text.includes(",") && parts.length !== 2) {
+      // Labelled sexagesimal may contain spaces, e.g. "08h 55m 10.8s -07d 14m 42s".
+      const split = text.match(/^(.*?s)\s+([+-]?\d.*)$/i);
+      if (split) parts = [split[1].replace(/\s+/g, ""), split[2].replace(/\s+/g, "")];
+    }
+    if (parts.length !== 2 || parts.some((part) => !part.trim())) {
+      throw new Error("Enter RA and Dec separated by a comma, e.g. 133.76, −7.24.");
+    }
+    const ra = parseCoordinate(parts[0], "ra"), dec = parseCoordinate(parts[1], "dec");
+    return { kind: "coordinates", ra, dec };
+  }
+
   export interface Target {
     id: string;
     label: string;

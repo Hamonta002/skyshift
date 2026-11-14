@@ -7,12 +7,16 @@ namespace SkyShift {
     if (Math.abs(cos) < 1e-8) return [source.ra, source.dec];
     return [source.ra + dt * source.pmra / 3600000 / cos, source.dec + dt * source.pmdec / 3600000];
   }
-  export function cataloguePixel(fixture: PackedFixture, source: CatalogueSource, year: number | null): [number, number] {
+  /** Zero-based aligned-grid pixel (x west, y north) for a sky position. */
+  export function fieldPixel(fixture: PackedFixture, ra: number, dec: number): [number, number] {
     const side = 2 * fixture.half + 1;
     const header: ExposureHeader = {size: side, x0:0, y0:0, crval:[fixture.ra0,fixture.dec0],
       crpix:[fixture.half + 1, fixture.half + 1], cdelt:[-fixture.scale / 3600,fixture.scale / 3600],
       pc:[1,0,0,1], a:{},b:{},ap:{},bp:{}};
-    const [ra, dec] = cataloguePosition(source, year);
     return worldToPixel(packWcs(header), ra, dec);
+  }
+  export function cataloguePixel(fixture: PackedFixture, source: CatalogueSource, year: number | null): [number, number] {
+    const [ra, dec] = cataloguePosition(source, year);
+    return fieldPixel(fixture, ra, dec);
   }
 }
