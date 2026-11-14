@@ -6,7 +6,7 @@
     "build": "node scripts/build.mjs",
     "bench": "node scripts/benchmark.mjs",
     "dev": "node scripts/serve.mjs",
-    "test": "node scripts/check-cache.mjs && node scripts/check-archive.mjs && node scripts/check-features.mjs && node scripts/check-map.mjs && python3 scripts/check-flag-reader.py",
+    "test": "node scripts/check-cache.mjs && node scripts/check-archive.mjs && node scripts/check-features.mjs && node scripts/check-map.mjs && node scripts/check-track.mjs && node scripts/check-identify.mjs && python3 scripts/check-flag-reader.py",
     "build:examples": "node scripts/build-examples.mjs"
   },
   "devDependencies": {

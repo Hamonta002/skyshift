@@ -161,6 +161,41 @@ h2 { font-size: .95rem; font-weight: 650; }
 .benchmark-output th, .benchmark-output td { padding: 6px 3px; border-bottom: 1px solid var(--line); text-align: right; }
 .benchmark-output th:first-child, .benchmark-output td:first-child { text-align: left; }
 
+/* Tracked object: verdict, facts, light curve and report. */
+.object-section { margin: -4px -20px 14px; padding: 12px 20px 16px; border-bottom: 1px solid var(--line); background: #121c2d; }
+.object-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.object-head h2 { color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .1em; }
+.verdict { margin: 4px 0 8px; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); font-weight: 680; font-size: 1.02rem; line-height: 1.35; }
+.verdict.known { border-color: #3d6b66; background: #15302f; color: #c9f3ea; }
+.verdict.candidate { border-color: #8a4a75; background: #3a1d33; color: #ffd0ee; }
+.verdict.neutral { background: var(--raised); color: #e9edf6; }
+.verdict.candidate::before { content: "★ "; color: #ff9ad5; }
+.reasons { margin: 0 0 10px; padding-left: 18px; color: var(--muted); font-size: .8rem; line-height: 1.5; }
+.object-facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0 0 10px; font-size: .8rem; }
+.object-facts dt { color: var(--muted); }
+.object-facts dd { margin: 0; overflow-wrap: anywhere; }
+.light-curve { margin: 8px 0; }
+.light-curve canvas { display: block; width: 100%; height: auto; border-radius: 8px; background: #0b111c; }
+.light-curve figcaption { margin-top: 4px; color: var(--muted); font-size: .7rem; line-height: 1.45; }
+.object-positions summary { cursor: pointer; padding: 4px 0; font-size: .82rem; }
+.table-scroll { overflow-x: auto; }
+.object-positions table { width: 100%; border-collapse: collapse; font: .72rem var(--mono); }
+.object-positions th, .object-positions td { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+.object-positions th:first-child, .object-positions td:first-child { text-align: left; }
+.object-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 6px; }
+.object-actions button { border-radius: 18px; font-size: .8rem; }
+.object-note { color: var(--muted); font-size: .7rem; line-height: 1.45; }
+.band-picks { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 8px 0; }
+.band-picks label { display: grid; gap: 3px; margin: 0; font-size: .76rem; }
+.band-picks select { width: 100%; min-width: 0; padding-inline: 4px; font-size: .74rem; }
+
+/* Mover finder: header button and candidate card. */
+.pill-button { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 3px 12px 3px 9px; border-radius: 15px; border-color: #6a3f5e; background: #2a1726; color: #ffc4e7; font-size: .76rem; font-weight: 650; white-space: nowrap; }
+.pill-button:hover { border-color: #ff9ad5; }
+.pill-button svg { width: 16px; height: 16px; }
+.candidates { border: 1px solid #6a3f5e; }
+.candidates .here-actions button:not(.icon-button):not(.primary) { min-width: 38px; }
+
 /* Layers (bottom left). */
 .layers-area { position: fixed; z-index: 6; left: calc(var(--panel-w) + 16px); bottom: 34px; }
 .layers-button { display: grid; justify-items: center; gap: 2px; width: 64px; height: 64px; padding: 8px 4px 6px; border-radius: 12px; border-color: transparent; background: var(--card-solid); box-shadow: var(--shadow); font-size: .7rem; font-weight: 600; }
@@ -317,6 +352,8 @@ h2 { font-size: .95rem; font-weight: 650; }
   .pair { grid-area: pair; }
   .compare-hint { grid-column: 1 / -1; }
   .visits button { flex-basis: 136px; }
+  .dock-head .observation { display: none; }
+  .object-section { margin-inline: -20px; }
   .map-controls { right: 6px; bottom: calc(var(--dock-space) + 34px); }
   .layers-area { left: auto; right: 6px; bottom: calc(var(--dock-space) + 34px + 166px); }
   .layers-button { width: 44px; height: 44px; padding: 0; border-radius: 10px; place-items: center; }
@@ -340,6 +377,7 @@ h2 { font-size: .95rem; font-weight: 650; }
   .pair select { min-height: 44px; }
   .playback button { min-width: 44px; height: 44px; }
   .compare-actions > button { min-height: 44px; }
+  .pill-button { min-height: 44px; }
   .icon-button { width: 44px; min-width: 44px; height: 44px; }
   .readout { display: none; }
   .layer-list label { min-height: 44px; }

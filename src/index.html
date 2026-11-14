@@ -59,6 +59,25 @@
       <button id="panel-close" class="icon-button" type="button" aria-label="Close details"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
     </div>
     <div class="panel-body">
+      <section id="object" class="object-section" aria-labelledby="object-title" hidden>
+        <div class="object-head">
+          <h2 id="object-title">Tracked object</h2>
+          <button id="object-clear" class="icon-button" type="button" aria-label="Stop tracking this object"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+        </div>
+        <p id="object-verdict" class="verdict" role="status"></p>
+        <ul id="object-reasons" class="reasons"></ul>
+        <dl id="object-facts" class="object-facts"></dl>
+        <figure class="light-curve">
+          <canvas id="object-curve" width="720" height="210" role="img" aria-label="Brightness per visit"></canvas>
+          <figcaption>Brightness in each visit (magnitudes relative to the median; up is brighter). SPHEREx samples different wavelengths within a band from visit to visit, so part of a change can be spectral. Hollow points are saturated (lower limits).</figcaption>
+        </figure>
+        <details class="object-positions"><summary>Positions in each visit</summary><div class="table-scroll"><table id="object-table"></table></div></details>
+        <div class="object-actions">
+          <button id="report-link" type="button">Copy report link</button>
+          <button id="report-json" type="button">Download report (JSON)</button>
+        </div>
+        <p class="object-note">Verdicts are rules of thumb from SIMBAD, Gaia DR3 and SkyBoT matches plus the motion and brightness measured here. Confirm them by eye with Blink.</p>
+      </section>
       <div class="panel-actions">
         <button id="panel-recenter" type="button">Show field</button>
         <button id="copy-coordinates" type="button">Copy coordinates</button>
@@ -97,6 +116,18 @@
         <p id="spectrum-status" role="status"></p>
         <canvas id="spectrum-chart" width="760" height="260" hidden aria-label="Spectrum chart" role="img"></canvas>
         <a id="spectrum-download" hidden download="skyshift-spectrum.csv">Download spectrum CSV</a>
+      </details>
+      <details class="tools" id="colour-tools">
+        <summary>Colour composite</summary>
+        <p>Combine three detector bands into one colour image, stacked over all visits, with the longest wavelength in red. Brown dwarfs and cool, dusty stars stand out as red. Bands other than the loaded one are downloaded from the archive, about 20–25 MB each.</p>
+        <div class="band-picks">
+          <label>Red <select id="colour-r"><option value="1">Band 1 · 0.75–1.12 μm</option><option value="2">Band 2 · 1.10–1.65 μm</option><option value="3">Band 3 · 1.63–2.43 μm</option><option value="4">Band 4 · 2.40–3.85 μm</option><option value="5">Band 5 · 3.81–4.43 μm</option><option value="6" selected>Band 6 · 4.41–5.01 μm</option></select></label>
+          <label>Green <select id="colour-g"><option value="1">Band 1 · 0.75–1.12 μm</option><option value="2">Band 2 · 1.10–1.65 μm</option><option value="3">Band 3 · 1.63–2.43 μm</option><option value="4" selected>Band 4 · 2.40–3.85 μm</option><option value="5">Band 5 · 3.81–4.43 μm</option><option value="6">Band 6 · 4.41–5.01 μm</option></select></label>
+          <label>Blue <select id="colour-b"><option value="1" selected>Band 1 · 0.75–1.12 μm</option><option value="2">Band 2 · 1.10–1.65 μm</option><option value="3">Band 3 · 1.63–2.43 μm</option><option value="4">Band 4 · 2.40–3.85 μm</option><option value="5">Band 5 · 3.81–4.43 μm</option><option value="6">Band 6 · 4.41–5.01 μm</option></select></label>
+        </div>
+        <button id="colour-load" type="button">Load colour composite</button>
+        <button id="colour-toggle" type="button" aria-pressed="false" hidden>Show colour</button>
+        <p id="colour-status" role="status"></p>
       </details>
       <details class="tools">
         <summary>Quality and provenance</summary>
@@ -191,6 +222,19 @@
       <p id="status" role="status">Preparing viewer…</p>
       <button id="cancel" type="button" hidden>Cancel</button>
     </div>
+    <div id="candidates" class="whats-here candidates" role="group" aria-labelledby="candidate-title" hidden>
+      <div class="here-text">
+        <strong id="candidate-title">Candidate</strong>
+        <span id="candidate-detail"></span>
+      </div>
+      <div class="here-actions">
+        <button id="candidate-prev" type="button" aria-label="Previous candidate"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button>
+        <button id="candidate-next" type="button" aria-label="Next candidate"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 6 6 6-6 6"/></svg></button>
+        <button id="candidate-blink" type="button">Blink</button>
+        <button id="candidate-track" class="primary" type="button">Track &amp; identify</button>
+        <button id="candidate-close" class="icon-button" type="button" aria-label="Close candidates"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+      </div>
+    </div>
     <div id="whats-here" class="whats-here" role="group" aria-labelledby="here-title" hidden>
       <div class="here-text">
         <strong id="here-title">Sky position</strong>
@@ -198,8 +242,8 @@
         <span id="here-value"></span>
       </div>
       <div class="here-actions">
+        <button id="here-track" class="primary" type="button" title="Track and identify (T)">Track &amp; identify</button>
         <button id="here-center" type="button">Center here</button>
-        <button id="here-details" type="button">Details</button>
         <button id="here-search" type="button">Search here</button>
         <button id="here-copy" type="button">Copy</button>
         <button id="here-close" class="icon-button" type="button" aria-label="Close position card"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
@@ -211,6 +255,7 @@
     <div class="dock-head">
       <h2>Observations</h2>
       <span id="visit-total" class="visit-total"></span>
+      <button id="find-movers" class="pill-button" type="button" title="Find sources that moved or changed between A and B (F)"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="7" cy="15" r="2.5"/><circle cx="16" cy="9" r="2.5"/><path d="M9 13.5 13.8 10.5"/></svg>Find movers</button>
       <span id="observation" class="observation">Aligning observations…</span>
       <button id="dock-collapse" class="icon-button dock-collapse" type="button" aria-expanded="true" aria-controls="visits" aria-label="Hide thumbnails"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
     </div>
@@ -252,6 +297,9 @@
       <dt><kbd>,</kbd> <kbd>.</kbd></dt><dd>Previous or next frame</dd>
       <dt><kbd>B</kbd></dt><dd>Blink A and B</dd>
       <dt><kbd>D</kbd></dt><dd>Toggle Difference B − A</dd>
+      <dt><kbd>F</kbd></dt><dd>Find sources that moved or changed between A and B</dd>
+      <dt><kbd>T</kbd></dt><dd>Track and identify the object at the selected point (or the view centre)</dd>
+      <dt><kbd>C</kbd></dt><dd>Show or hide the colour composite once loaded</dd>
       <dt><kbd>I</kbd></dt><dd>Open field details</dd>
       <dt><kbd>/</kbd></dt><dd>Search</dd>
       <dt><kbd>Esc</kbd></dt><dd>Close the open card or panel, then pause</dd>

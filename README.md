@@ -43,6 +43,47 @@ working persistent cache. Search collections and band ranges are configured in
 `config/archive.json`. New releases require checking their product layout and
 adding their collection names; this does not change the numerical kernel.
 
+## Discover and identify
+
+- **Find movers** (or `F`) looks for the signature of a moving source in B − A:
+  a fading spot next to a brightening one. You can then step through the
+  candidates. Sources that only changed brightness are listed separately.
+- **Track & identify** (click a source, or `T`) measures the source's position
+  and brightness in every visit, fits its motion in arcsec per year, and draws
+  its path. It then checks SIMBAD (with the Harvard mirror as a fallback), Gaia
+  DR3 and IMCCE SkyBoT, after moving catalogue positions to the date of the
+  image using their proper motions. The verdict, such as "Brown Dwarf",
+  "Mira Variable", "Known solar-system object" or "Unidentified moving source:
+  candidate", lists what it was based on. Verdicts are rules of thumb, so
+  confirm them with Blink. Saturated cores are located from their masked
+  pixels, and their brightness is a lower limit.
+- **Reports**: *Copy report link* reopens the view with the object tracked
+  (`mark=ra,dec`). *Download report* saves the positions, motion, brightness
+  and catalogue matches as JSON.
+- **Colour composite** (place panel) fetches two more detector bands and shows
+  three bands stacked over all visits, with the longest wavelength in red. Each
+  extra band is about 20–25 MB.
+
+Brightness changes between visits can be partly spectral, because SPHEREx
+samples different wavelengths within a band on each visit. Identification and
+colour composites need the server routes; the bundled examples, playback,
+Find movers and tracking work offline.
+
+## Deploy
+
+The `Dockerfile` builds the viewer, including the Rust/WebAssembly kernel, and
+serves it with all routes on port 8080:
+
+```sh
+podman build -t skyshift .   # or docker build
+podman run -p 8080:8080 skyshift
+```
+
+Any container host can run it (for example Render, Fly.io, Railway or Cloud
+Run). `HOST` and `PORT` select the listening address; the default is
+`127.0.0.1:4173` for local use. The browser reads image pixels directly from
+the public SPHEREx S3 bucket, which allows cross-origin range requests.
+
 ## Build the other offline examples
 
 On a machine with working access to IRSA and the SPHEREx S3 bucket, run:
@@ -52,8 +93,8 @@ npm run build:examples
 npm run build
 ```
 
-You can provide a target ID (for example, `npm run build:examples -- barnard`)
-to fetch only one. If live search fails, the command can use the recorded coverage
+All four are bundled in this repository (built 2026-11-14). You can provide a
+target ID (for example, `npm run build:examples -- barnard`) to rebuild only one. If live search fails, the command can use the recorded coverage
 tables in `reference/_work/coverage`; it still needs S3 to download image pixels. The command saves real, sampled products and provenance under
 `reference/fixtures/examples/`; it reports any failed target instead of fabricating
 observations. Selection of these optional example bundles is supported by the app.
@@ -72,12 +113,14 @@ pinned real fixture and on synthetic workloads. Fixture inputs and source
 metadata are in `reference/fixtures/`. See `SPHEREx_Implementation_Plan.md`
 for the full acceptance criteria.
 
-**This is not yet a release-ready implementation.** The live IRSA/S3 integration,
-real browser interaction, persistent-cache reload, and the four other target
-image sequences have not been verified here. There are no bundled image sequences
-for those four targets yet. The wavelength filter selects exposure bandpasses at the field centre; it is
-not a time-resolved 102-channel calibrated cube. Catalogue routes and overlays have offline
-fixture tests but have not been verified against the live services. The new FLAGS reader has not yet been validated against a real compressed product.
+**This is not yet a release-ready implementation.** Verified on 2026-11-14 in
+headless Chromium: the live IRSA search, S3 range reads and alignment for all five
+targets; Find movers, Track & identify (live SIMBAD, Gaia DR3 and SkyBoT) and the
+colour composite. Still unverified: physical phone and desktop browsers,
+persistent-cache reload, and a public deployment (the container image builds
+locally). The wavelength filter selects exposure bandpasses at the field centre; it is
+not a time-resolved 102-channel calibrated cube. The Gaia catalogue route answers live;
+the overlay drawing and CatWISE are tested only offline. The FLAGS reader has not yet been validated against a real compressed product.
 Calibrated uncertainty and scientifically matched photometry are not implemented. The spectrum is approximate, uses uncorrected aperture flux and
 has not been validated as a scientific measurement. Broad-band sums and
 differences are visual diagnostics: wavelength, PSF, quality flags and

@@ -133,7 +133,7 @@ try {
   const kernel = compileRust();
   const bytes = readFileSync(kernel.wasm);
   const data = fixture();
-  const sources = ["science", "wasm", "worker", "coordinates", "archive", "spectrum", "catalogue", "map", "viewer"];
+  const sources = ["science", "wasm", "worker", "coordinates", "archive", "spectrum", "catalogue", "map", "track", "viewer"];
   const assemble = compileTypeScript(sources.map((name) => `src/${name}.ts`));
   const compute = assemble(sources.slice(0, 2));
   const worker = assemble(sources.slice(0, 3)) + "\nSkyShift.installWorker(self);";
@@ -158,7 +158,7 @@ try {
   writeFileSync(join(out, "kernel.wasm"), bytes);
   writeFileSync(join(out, "core.cjs"), compute + "\nmodule.exports = SkyShift;\n");
   writeFileSync(join(out, "worker.cjs"), assemble(sources.slice(0, 3)) + "\nmodule.exports = SkyShift;\n");
-  writeFileSync(join(out, "archive.cjs"), assemble(["science", "coordinates", "archive", "spectrum", "catalogue", "map"]) + "\nmodule.exports = SkyShift;\n");
+  writeFileSync(join(out, "archive.cjs"), assemble(["science", "coordinates", "archive", "spectrum", "catalogue", "map", "track"]) + "\nmodule.exports = SkyShift;\n");
   writeFileSync(join(out, "fixture.json"), JSON.stringify(data));
   const exampleOutput = join(out, "examples");
   rmSync(exampleOutput, { recursive: true, force: true });

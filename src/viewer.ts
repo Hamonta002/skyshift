@@ -154,7 +154,9 @@ declare const ASSETS: {
       for (const [key, value] of Object.entries(currentSelection)) url.searchParams.set(key, String(value));
     } else for (const key of ["ra", "dec", "band", "fov", "from", "to", "asof"]) url.searchParams.delete(key);
     // Keep the map position readable, Google-Maps style: at=ra,dec,zoom.
-    url.search = url.searchParams.toString().replace(/(^|&)at=([^&]*)/, (_, lead: string, value: string) => `${lead}at=${decodeURIComponent(value)}`);
+    if (tracked) url.searchParams.set("mark", `${tracked.start.ra.toFixed(6)},${tracked.start.dec.toFixed(6)}`);
+    else url.searchParams.delete("mark");
+    url.search = url.searchParams.toString().replace(/(^|&)(at|mark)=([^&]*)/g, (_, lead: string, key: string, value: string) => `${lead}${key}=${decodeURIComponent(value)}`);
     try { history.replaceState(null, "", url); } catch { /* File previews can restrict history. */ }
   }
   let saveTimer: number | undefined;
@@ -231,9 +233,11 @@ declare const ASSETS: {
     const arithmetic = view === "sum" || view === "difference";
     const pixels = arithmetic ? SkyShift.combineFrames(series.frames[a], series.frames[b], view) : series.frames[frame];
     currentPixels = pixels;
-    const limit = paint(fieldCanvas, fieldContext, pixels, side, view);
+    const colourView = showColour && !!colour && colour.side === side;
+    const limit = colourView ? 0 : paint(fieldCanvas, fieldContext, pixels, side, view);
+    if (colourView) paintColour();
     const differenceScale = get("difference-scale");
-    differenceScale.hidden = view !== "difference";
+    differenceScale.hidden = view !== "difference" || colourView;
     if (view === "difference") {
       get("difference-negative").textContent = `−${limit.toPrecision(2)}`;
       get("difference-positive").textContent = `+${limit.toPrecision(2)}`;
@@ -241,13 +245,14 @@ declare const ASSETS: {
     difference.setAttribute("aria-pressed", String(view === "difference"));
     const count = series.counts[frame];
     const shallow = count < 5 && modeSelect.value !== "exposures";
-    observation.textContent = arithmetic
+    observation.textContent = colourView ? `Colour composite · red band ${colour!.bands[0]} · green band ${colour!.bands[1]} · blue band ${colour!.bands[2]} · all visits`
+      : arithmetic
       ? `${view === "difference" ? "Visual difference B − A" : "Visual sum A + B"} · A ${labelFor(a)} · B ${labelFor(b)}`
       : `${labelFor(frame)} · ${count} ${count === 1 ? "exposure" : "exposures"}${shallow ? " · Shallow frame" : ""}`;
     const slot = get("active-slot");
     slot.textContent = view === "blink" ? (frame === a ? "A" : frame === b ? "B" : "") : "";
     slot.hidden = slot.textContent === "";
-    fieldDateText = arithmetic
+    fieldDateText = colourView ? `Colour · bands ${colour!.bands.join(" / ")}` : arithmetic
       ? (view === "difference" ? `B − A · ${labelFor(b)} − ${labelFor(a)}` : `A + B · ${labelFor(a)} + ${labelFor(b)}`)
       : `${labelFor(frame)} · ${count} exp${shallow ? " · shallow" : ""}`;
     get("inspect-frame").textContent = observation.textContent;
@@ -298,6 +303,7 @@ declare const ASSETS: {
     if (gridToggle.checked) drawGraticule(ctx, W, H, k);
     const corners = drawField(ctx, k);
     drawMarkers(ctx, k);
+    drawDiscovery(ctx, k);
     placeFieldChrome(corners);
     const bar = SkyShift.scaleBar(k);
     get("scale-line").style.width = `${bar.px}px`;
@@ -593,7 +599,8 @@ declare const ASSETS: {
     let left = 0, bottom = dock.top;
     if (!panel.hidden) {
       // Layout offsets ignore the slide-in transform, which getBoundingClientRect would include.
-      if (panel.offsetTop < H * 0.3) left = panel.offsetLeft + panel.offsetWidth; else bottom = Math.min(bottom, panel.offsetTop);
+      // A narrow panel covers the left side; a full-width one is a bottom sheet.
+      if (panel.offsetWidth < W * 0.75) left = panel.offsetLeft + panel.offsetWidth; else bottom = Math.min(bottom, panel.offsetTop);
     }
     visible.left = left;
     visible.top = Math.min(topbar.bottom, H / 3);
@@ -722,7 +729,7 @@ declare const ASSETS: {
     get("here-value").textContent = pixel.inside
       ? Number.isFinite(pixel.value) ? `${valueText(pixel.value)} at this pixel` : "No data at this pixel"
       : `${formatAngle(SkyShift.separation(ra, dec, fixture.ra0, fixture.dec0))} from the ${fieldName()} field centre`;
-    get("here-details").hidden = !pixel.inside;
+    get("here-track").hidden = !pixel.inside;
     get("here-search").hidden = pixel.inside || embed;
   }
   get("here-close").addEventListener("click", () => { hideHere(); mapCanvas.focus(); });
@@ -732,7 +739,6 @@ declare const ASSETS: {
     const [vx, vy] = visibleCentre();
     if (p) panScreen(vx - p[0], vy - p[1]);
   });
-  get("here-details").addEventListener("click", () => openPanel(get("here-details")));
   get("here-search").addEventListener("click", () => { if (selected) void searchFromOptions(selected.ra, selected.dec); });
   get("here-copy").addEventListener("click", () => {
     if (selected) void copyText(`${selected.ra.toFixed(6)}, ${selected.dec.toFixed(6)}`, "Coordinates copied.");
@@ -803,6 +809,7 @@ declare const ASSETS: {
     if (playback === "visits") { pause(); return; }
     if (busy || !series || series.frames.length < 2) return;
     pause();
+    colourOff();
     if (modeSelect.value !== "exposures") modeSelect.value = "stack";
     playback = "visits";
     timer = window.setInterval(() => step(1), 850);
@@ -815,6 +822,7 @@ declare const ASSETS: {
     if (playback === "blink") { pause(); return; }
     if (busy || !canCompare() || modeSelect.value === "exposures") return;
     pause();
+    colourOff();
     dismissHint();
     const a = Number(referenceSelect.value), b = Number(comparisonSelect.value);
     modeSelect.value = "blink";
@@ -891,6 +899,7 @@ declare const ASSETS: {
       series = loaded.series;
       frame = Math.max(0, Math.min(frame, series.frames.length - 1));
       updateStretch(series);
+      resetDiscovery();
       rebuildVisits();
       commitView();
       const source = {
@@ -1143,6 +1152,7 @@ declare const ASSETS: {
   cancel.addEventListener("click", () => interrupt?.());
   function manualStep(delta: number): void {
     pause();
+    colourOff();
     if (modeSelect.value !== "exposures") modeSelect.value = "stack";
     step(delta);
     updateControls();
@@ -1155,6 +1165,7 @@ declare const ASSETS: {
   function toggleDifference(): void {
     if (difference.disabled) return;
     pause();
+    colourOff();
     modeSelect.value = modeSelect.value === "difference" ? "stack" : "difference";
     commitView();
   }
@@ -1172,19 +1183,446 @@ declare const ASSETS: {
     commitView();
   });
 
+  // -------------------------------------------------------- discovery ----
+  // Track & identify, the mover finder, colour composites and reports.
+  type Tracked = {
+    start: { ra: number; dec: number; frame: number };
+    points: SkyShift.TrackPoint[]; motion: SkyShift.Motion | null; light: SkyShift.Brightness;
+    id: SkyShift.Identification | null; idStatus: string; verdict: SkyShift.Verdict;
+  };
+  let tracked: Tracked | null = null;
+  let trackToken = 0;
+  let candidates: SkyShift.MoverCandidate[] = [];
+  let candidateIndex = 0;
+  let colour: { bands: number[]; channels: Float32Array[]; side: number } | null = null;
+  let showColour = false;
+  const objectSection = get("object"), candidateCard = get("candidates");
+
+  /** Mean MJD of each loaded frame (each exposure, or the exposures in each visit). */
+  function frameMjds(): (number | null)[] {
+    if (!series) return [];
+    if (modeSelect.value === "exposures") return series.frames.map((_, i) => fixture.headers[i]?.mjd ?? null);
+    let offset = 0;
+    return fixture.visitSizes.map((size) => {
+      const values = fixture.headers.slice(offset, offset + size).map((h) => h.mjd).filter((m): m is number => m !== undefined && Number.isFinite(m));
+      offset += size;
+      return values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
+    });
+  }
+
+  function resetDiscovery(): void {
+    tracked = null; trackToken++;
+    objectSection.hidden = true;
+    candidates = []; candidateCard.hidden = true;
+    colour = null; showColour = false;
+    get("colour-status").textContent = "";
+    updateColourToggle();
+  }
+
+  function ensureVisible(ra: number, dec: number): void {
+    const p = toScreen(ra, dec);
+    if (!p) return;
+    if (p[0] < visible.left + 40 || p[0] > visible.right - 40 || p[1] < visible.top + 30 || p[1] > visible.bottom - 40) {
+      const [vx, vy] = visibleCentre();
+      panScreen(vx - p[0], vy - p[1]);
+    }
+  }
+
+  function trackAt(ra: number, dec: number, startFrame = frame): boolean {
+    if (!series) return false;
+    const side = series.side;
+    const [x, y] = SkyShift.fieldPixel(fixture, ra, dec);
+    if (!(x >= 0 && y >= 0 && x < side && y < side)) { status.textContent = "Tracking works on sources inside the SPHEREx field."; return false; }
+    const points = SkyShift.trackSource(series.frames, side, startFrame, x, y, fixture, frameMjds());
+    if (!points) { status.textContent = "No source bright enough to track here. Click on a star or a bright spot."; return false; }
+    const motion = SkyShift.fitMotion(points), light = SkyShift.brightness(points, series.frames.length);
+    const at = points.find((p) => p.frame === startFrame) ?? points[0];
+    tracked = {
+      start: { ra: at.ra, dec: at.dec, frame: startFrame }, points, motion, light, id: null,
+      idStatus: "Checking SIMBAD, Gaia DR3 and SkyBoT…", verdict: SkyShift.classifyObject(points, series.frames.length, motion, light, null),
+    };
+    const token = ++trackToken;
+    dismissHint();
+    const opener = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : mapCanvas;
+    hideHere();
+    objectSection.hidden = false;
+    renderObject();
+    openPanel(opener, [at.ra, at.dec]);
+    objectSection.scrollIntoView({ block: "start" });
+    render();
+    saveState();
+    void identifyTracked(token);
+    return true;
+  }
+
+  async function identifyTracked(token: number): Promise<void> {
+    const t = tracked;
+    if (!t) return;
+    const best = t.points.find((p) => p.frame === t.start.frame) ?? t.points[0];
+    const mjd = best.mjd ?? frameMjds().find((m): m is number => m !== null) ?? 61000;
+    const epochs = [...new Set(t.points.map((p) => p.mjd).filter((m): m is number => m !== null))].slice(0, 4);
+    const query = new URLSearchParams({ ra: best.ra.toFixed(6), dec: best.dec.toFixed(6), mjd: mjd.toFixed(4),
+      radius: best.saturated ? "12" : "8", epochs: (epochs.length ? epochs : [mjd]).map((m) => m.toFixed(4)).join(",") });
+    let identification: SkyShift.Identification | null = null, note = "";
+    try {
+      const response = await fetch(`/api/identify?${query}`);
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data) throw new Error(response.status === 404 || !data ? "server" : data.error ?? `HTTP ${response.status}`);
+      identification = data;
+      const down = (["simbad", "gaia", "skybot"] as const).filter((key) => data[key].status !== "ok");
+      if (down.length) note = `Not checked: ${down.map((key) => data[key].status).join(" ")}`;
+    } catch (error) {
+      note = error instanceof TypeError || (error instanceof Error && error.message === "server")
+        ? "Catalogue identification needs the SkyShift server (npm run dev); showing measurements only."
+        : `Identification failed: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    if (token !== trackToken || !tracked) return;
+    tracked.id = identification;
+    tracked.idStatus = note;
+    tracked.verdict = SkyShift.classifyObject(tracked.points, series?.frames.length ?? 0, tracked.motion, tracked.light, identification);
+    renderObject();
+  }
+
+  const compass = (angle: number) => ["north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"][Math.round(angle / 45) % 8];
+  const distanceText = (pc: number) => pc < 100 ? `${pc.toFixed(1)} pc (${(pc * 3.2616).toFixed(1)} light-years)` : `${pc.toFixed(0)} pc`;
+
+  function renderObject(): void {
+    const t = tracked;
+    if (!t) { objectSection.hidden = true; return; }
+    const frames = series?.frames.length ?? 0;
+    const verdict = get("object-verdict");
+    verdict.className = `verdict ${t.verdict.tone}`;
+    verdict.textContent = t.verdict.label;
+    get("object-reasons").replaceChildren(...[...t.verdict.reasons, ...(t.idStatus ? [t.idStatus] : [])].map((text) => {
+      const item = document.createElement("li"); item.textContent = text; return item;
+    }));
+    const facts: [string, string | Node][] = [];
+    const at = t.points.find((p) => p.frame === t.start.frame) ?? t.points[0];
+    facts.push(["Position", `${SkyShift.formatRa(at.ra, 0.01)} ${SkyShift.formatDec(at.dec, 0.1)} in ${labelFor(at.frame)}`]);
+    facts.push(["Seen in", `${t.points.length} of ${frames} ${modeSelect.value === "exposures" ? "exposures" : "visits"}${t.points.some((p) => p.saturated) ? " · saturated core" : ""}`]);
+    if (t.motion) facts.push(["Motion", t.motion.significant
+      ? `${t.motion.total.toFixed(2)} ± ${t.motion.error.toFixed(2)}″/yr toward the ${compass(t.motion.angle)} (PA ${t.motion.angle.toFixed(0)}°)`
+      : `None detected (below about ${Math.max(3 * t.motion.error, 1.2 / t.motion.spanYears).toFixed(1)}″/yr)`]);
+    const star = t.id?.simbad.matches.find((m) => m.type !== "Pl") ?? t.id?.simbad.matches[0];
+    if (star) {
+      const link = document.createElement("a");
+      link.href = `https://simbad.cds.unistra.fr/simbad/sim-id?Ident=${encodeURIComponent(star.name)}`;
+      link.target = "_blank"; link.rel = "noopener"; link.textContent = star.name;
+      const text = document.createElement("span");
+      text.append(link, ` · ${star.description}${star.spectralType ? `, ${star.spectralType}` : ""}`);
+      facts.push(["SIMBAD", text]);
+      if (star.pmra !== null && star.pmdec !== null) facts.push(["Catalogue motion", `${(Math.hypot(star.pmra, star.pmdec) / 1000).toFixed(2)}″/yr`]);
+      if (star.parallax && star.parallax > 0) facts.push(["Distance", `about ${distanceText(1000 / star.parallax)}`]);
+    }
+    const gaia = t.id?.gaia.matches[0];
+    if (gaia) facts.push(["Gaia DR3", `G = ${gaia.magnitude?.toFixed(2) ?? "–"}${gaia.colour != null ? `, BP−RP = ${gaia.colour.toFixed(2)}` : ""}${!star && gaia.parallax && gaia.parallax > 0 ? `, about ${distanceText(1000 / gaia.parallax)}` : ""}`]);
+    for (const sso of t.id?.skybot.matches ?? []) facts.push(["Solar system", `${sso.number ? `(${sso.number}) ` : ""}${sso.name} · ${sso.kind} · V ≈ ${sso.magnitude ?? "–"} · ${sso.separation.toFixed(0)}″ away`]);
+    get("object-facts").replaceChildren(...facts.flatMap(([term, value]) => {
+      const dt = document.createElement("dt"), dd = document.createElement("dd");
+      dt.textContent = term; dd.append(value);
+      return [dt, dd];
+    }));
+    const table = get<HTMLTableElement>("object-table");
+    table.replaceChildren();
+    const head = table.createTHead().insertRow();
+    for (const label of [modeSelect.value === "exposures" ? "Exposure" : "Visit", "RA", "Dec", "S/N", "Δmag"]) {
+      const th = document.createElement("th"); th.scope = "col"; th.textContent = label; head.append(th);
+    }
+    const body = table.createTBody();
+    for (let f = 0; f < frames; f++) {
+      const p = t.points.find((q) => q.frame === f), dm = t.light.deltaMag[f];
+      const row = body.insertRow();
+      for (const value of [labelFor(f), p ? SkyShift.formatRa(p.ra, 0.01) : "not found", p ? SkyShift.formatDec(p.dec, 0.1) : "",
+        p ? (p.saturated ? "saturated" : p.snr.toFixed(0)) : "", dm !== null ? `${dm >= 0 ? "+" : "−"}${Math.abs(dm).toFixed(2)}` : "–"]) row.insertCell().textContent = value;
+    }
+    drawLightCurve();
+  }
+
+  function drawLightCurve(): void {
+    const t = tracked, canvas = get<HTMLCanvasElement>("object-curve"), ctx = canvas.getContext("2d")!;
+    if (!t) return;
+    const W = canvas.width, H = canvas.height, left = 84, right = 22, top = 22, bottom = 58;
+    ctx.clearRect(0, 0, W, H);
+    ctx.font = "22px system-ui, sans-serif";
+    ctx.fillStyle = "#a0aec4";
+    const frames = series?.frames.length ?? 0;
+    const values = t.light.deltaMag.flatMap((m, f) => m === null ? [] : [{ m, f, p: t.points.find((q) => q.frame === f) }]);
+    if (values.length < 2) { ctx.fillText("Not enough detections for a light curve.", left, H / 2); return; }
+    const errors = values.map((v) => v.p && !v.p.saturated ? Math.hypot(1.0857 / Math.max(v.p.snr, 1), 0.05) : 0);
+    const lo = Math.min(...values.map((v, i) => v.m - errors[i])), hi = Math.max(...values.map((v, i) => v.m + errors[i]));
+    const span = Math.max(hi - lo, 0.2), mid = (hi + lo) / 2, yMin = mid - span * 0.6, yMax = mid + span * 0.6;
+    const xOf = (f: number) => left + (frames <= 1 ? 0.5 : f / (frames - 1)) * (W - left - right);
+    const yOf = (m: number) => top + (m - yMin) / (yMax - yMin) * (H - top - bottom); // Brighter (negative) is up.
+    ctx.strokeStyle = "#2a3650";
+    ctx.beginPath(); ctx.moveTo(left, top); ctx.lineTo(left, H - bottom); ctx.lineTo(W - right, H - bottom); ctx.stroke();
+    ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(left, yOf(0)); ctx.lineTo(W - right, yOf(0)); ctx.stroke(); ctx.setLineDash([]);
+    const signed = (m: number) => `${m > 0 ? "+" : m < 0 ? "−" : ""}${Math.abs(m).toFixed(2)}`;
+    ctx.fillText(signed(yMin), 6, top + 16); ctx.fillText(signed(yMax), 6, H - bottom);
+    if (yOf(0) > top + 40 && yOf(0) < H - bottom - 30) ctx.fillText("0", 6, yOf(0) + 8);
+    values.forEach((v, i) => {
+      const x = xOf(v.f), y = yOf(v.m);
+      ctx.strokeStyle = "#a6e8dc"; ctx.fillStyle = "#a6e8dc"; ctx.lineWidth = 1.6;
+      ctx.beginPath(); ctx.moveTo(x, yOf(v.m - errors[i])); ctx.lineTo(x, yOf(v.m + errors[i])); ctx.stroke();
+      ctx.beginPath(); ctx.arc(x, y, 8, 0, 2 * Math.PI);
+      if (v.p?.saturated) ctx.stroke(); else ctx.fill();
+    });
+    ctx.fillStyle = "#a0aec4"; ctx.textAlign = "center";
+    const every = Math.ceil(frames / 6);
+    for (let f = 0; f < frames; f += every) ctx.fillText(labelFor(f).slice(0, 13), Math.min(Math.max(xOf(f), left + 60), W - right - 60), H - bottom + 36);
+    ctx.textAlign = "left";
+  }
+
+  function drawDiscovery(ctx: CanvasRenderingContext2D, k: number): void {
+    const pixelPx = 2 ** camera.z;
+    if (tracked) {
+      const pts = tracked.points.flatMap((p) => { const s = toScreen(p.ra, p.dec, k); return s ? [{ p, s }] : []; });
+      ctx.strokeStyle = "rgba(166, 232, 220, 0.9)"; ctx.fillStyle = "#a6e8dc"; ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      pts.forEach(({ s }, i) => i ? ctx.lineTo(s[0], s[1]) : ctx.moveTo(s[0], s[1]));
+      ctx.stroke();
+      for (const { s } of pts) { ctx.beginPath(); ctx.arc(s[0], s[1], 2.6, 0, 2 * Math.PI); ctx.fill(); }
+      if (tracked.motion?.significant && pts.length >= 2) {
+        // Arrowhead on the last segment shows the direction of motion.
+        const [p, q] = [pts[pts.length - 2].s, pts[pts.length - 1].s];
+        const angle = Math.atan2(q[1] - p[1], q[0] - p[0]);
+        ctx.beginPath();
+        ctx.moveTo(q[0] + 9 * Math.cos(angle), q[1] + 9 * Math.sin(angle));
+        ctx.lineTo(q[0] + 9 * Math.cos(angle) - 8 * Math.cos(angle - 0.5), q[1] + 9 * Math.sin(angle) - 8 * Math.sin(angle - 0.5));
+        ctx.lineTo(q[0] + 9 * Math.cos(angle) - 8 * Math.cos(angle + 0.5), q[1] + 9 * Math.sin(angle) - 8 * Math.sin(angle + 0.5));
+        ctx.closePath(); ctx.fill();
+      }
+      if (pixelPx >= 3 && pts.length <= 12) {
+        ctx.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace"; ctx.fillStyle = "rgba(219, 233, 250, 0.85)";
+        for (const { p, s } of pts) ctx.fillText(labelFor(p.frame).slice(0, 12), s[0] + 8, s[1] + 12 + (p.frame % 2) * 11);
+      }
+      // The ring follows the visible frame; hidden while blinking so it adds no motion of its own.
+      const current = pts.find(({ p }) => p.frame === frame);
+      if (current && playback !== "blink" && !arithmeticView()) {
+        ctx.strokeStyle = "#a6e8dc"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(current.s[0], current.s[1], Math.max(10, 1.9 * pixelPx), 0, 2 * Math.PI); ctx.stroke();
+      }
+    }
+    candidates.forEach((c, i) => {
+      const [ra, dec] = SkyShift.gridToSky(fixture, c.x, c.y);
+      const s = toScreen(ra, dec, k);
+      if (!s) return;
+      const active = i === candidateIndex && !candidateCard.hidden;
+      const tint = c.kind === "mover" ? "#ff9ad5" : "#f3c97a", r = Math.max(10, 2.4 * pixelPx);
+      ctx.strokeStyle = tint; ctx.fillStyle = tint; ctx.lineWidth = active ? 2.4 : 1.2;
+      ctx.setLineDash(active ? [] : [4, 3]);
+      ctx.beginPath(); ctx.arc(s[0], s[1], r, 0, 2 * Math.PI); ctx.stroke();
+      ctx.setLineDash([]);
+      if (c.kind === "mover" && c.shift * pixelPx >= 6) {
+        const from = toScreen(...SkyShift.gridToSky(fixture, ...c.from), k), to = toScreen(...SkyShift.gridToSky(fixture, ...c.to), k);
+        if (from && to) { ctx.beginPath(); ctx.moveTo(from[0], from[1]); ctx.lineTo(to[0], to[1]); ctx.stroke(); }
+      }
+      ctx.font = "600 11px system-ui, sans-serif";
+      ctx.fillText(String(i + 1), s[0] + r * 0.72 + 2, s[1] - r * 0.72 - 2);
+    });
+  }
+
+  // Mover finder: sources that moved or changed between A and B.
+  function findMoversNow(): void {
+    if (busy || !series) return;
+    if (!canCompare() || modeSelect.value === "exposures") {
+      status.textContent = "Choose two different visits as A and B, in the visit-stack view, to look for movers.";
+      return;
+    }
+    pause();
+    colourOff();
+    dismissHint();
+    const a = Number(referenceSelect.value), b = Number(comparisonSelect.value);
+    candidates = SkyShift.findMovers(series.frames[a], series.frames[b], series.side);
+    if (!candidates.length) {
+      candidateCard.hidden = true;
+      status.textContent = `Nothing moved or changed between ${labelFor(a)} and ${labelFor(b)} above the detection threshold.`;
+      render();
+      return;
+    }
+    hideHere();
+    candidateIndex = 0;
+    showCandidate();
+    const movers = candidates.filter((c) => c.kind === "mover").length, changes = candidates.length - movers;
+    status.textContent = `${movers} moving-source candidate${movers === 1 ? "" : "s"} and ${changes} brightness change${changes === 1 ? "" : "s"} between A and B.`;
+  }
+  function showCandidate(): void {
+    const c = candidates[candidateIndex];
+    if (!c) return;
+    candidateCard.hidden = false;
+    const a = Number(referenceSelect.value), b = Number(comparisonSelect.value);
+    get("candidate-title").textContent = `${c.kind === "mover" ? "Moving-source candidate" : c.kind === "brighter" ? "Got brighter" : "Got fainter"} · ${candidateIndex + 1} of ${candidates.length}`;
+    const strength = c.score >= 1000 ? "S/N over 1000" : `S/N ${c.score.toFixed(0)}`;
+    get("candidate-detail").textContent = c.kind === "mover"
+      ? `Shifted ${(c.shift * fixture.scale).toFixed(1)}″ between A (${labelFor(a)}) and B (${labelFor(b)}) · ${strength}`
+      : `Changed between A (${labelFor(a)}) and B (${labelFor(b)}) without moving · ${strength}`;
+    for (const id of ["candidate-prev", "candidate-next"]) get<HTMLButtonElement>(id).disabled = candidates.length < 2;
+    // Bring it into view, zoomed in enough to judge it by eye.
+    const [ra, dec] = SkyShift.gridToSky(fixture, c.x, c.y);
+    const z = SkyShift.clampZoom(Math.max(camera.z, 4));
+    const [vx, vy] = visibleCentre();
+    setCamera(SkyShift.placeAt({ ...camera, z }, ra, dec, vx - screen.width / 2, vy - screen.height / 2, SkyShift.pxPerArcsec(z, fixture.scale)));
+  }
+  function closeCandidates(): void {
+    candidates = [];
+    candidateCard.hidden = true;
+    render();
+  }
+  get("find-movers").addEventListener("click", findMoversNow);
+  get("candidate-prev").addEventListener("click", () => { candidateIndex = (candidateIndex - 1 + candidates.length) % candidates.length; showCandidate(); });
+  get("candidate-next").addEventListener("click", () => { candidateIndex = (candidateIndex + 1) % candidates.length; showCandidate(); });
+  get("candidate-blink").addEventListener("click", () => toggleBlink());
+  get("candidate-close").addEventListener("click", () => { closeCandidates(); mapCanvas.focus(); });
+  get("candidate-track").addEventListener("click", () => {
+    const c = candidates[candidateIndex];
+    if (!c) return;
+    const [ra, dec] = SkyShift.gridToSky(fixture, ...c.to);
+    pause();
+    trackAt(ra, dec, Number(comparisonSelect.value));
+  });
+
+  get("here-track").addEventListener("click", () => { if (selected) trackAt(selected.ra, selected.dec); });
+  get("object-clear").addEventListener("click", () => {
+    tracked = null; trackToken++;
+    objectSection.hidden = true;
+    render(); saveState();
+    get("panel-close").focus();
+  });
+
+  // Reports: a link that reopens the view with the object tracked, and a JSON record.
+  get("report-link").addEventListener("click", () => {
+    clearTimeout(saveTimer);
+    saveState();
+    void copyText(location.href, "Report link copied. It reopens this view with the object tracked.");
+  });
+  get("report-json").addEventListener("click", () => {
+    const t = tracked;
+    if (!t) return;
+    clearTimeout(saveTimer);
+    saveState();
+    const report = {
+      schemaVersion: 1, tool: "SkyShift", createdUtc: new Date().toISOString(), link: location.href,
+      field: { name: fieldName(), raDeg: fixture.ra0, decDeg: fixture.dec0, detector: currentSelection?.band ?? 6,
+        fieldArcmin: fieldSide() * fixture.scale / 60, frames: (series?.frames ?? []).map((_, i) => labelFor(i)) },
+      object: {
+        verdict: t.verdict.label, tone: t.verdict.tone, reasons: t.verdict.reasons,
+        positions: t.points.map((p) => ({ frame: labelFor(p.frame), mjd: p.mjd, raDeg: p.ra, decDeg: p.dec, snr: p.snr, saturated: !!p.saturated, deltaMag: t.light.deltaMag[p.frame] })),
+        motion: t.motion && { eastArcsecPerYear: t.motion.east, northArcsecPerYear: t.motion.north, totalArcsecPerYear: t.motion.total,
+          errorArcsecPerYear: t.motion.error, positionAngleDeg: t.motion.angle, significant: t.motion.significant, spanYears: t.motion.spanYears },
+        brightness: { amplitudeMag: t.light.amplitude, variable: t.light.variable },
+      },
+      identification: t.id,
+      warnings: ["Positions are flux-weighted centroids on aligned SPHEREx visit stacks; motion is a linear fit.",
+        "Brightness changes can include the different wavelengths SPHEREx samples within a band from visit to visit.",
+        "Verdicts are rules of thumb from catalogue matches and measurements; confirm them by eye."],
+    };
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }));
+    link.download = `skyshift-object-${t.start.ra.toFixed(4)}_${t.start.dec.toFixed(4)}.json`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  });
+
+  // Colour composite across three detector bands.
+  function updateColourToggle(): void {
+    const toggle = get<HTMLButtonElement>("colour-toggle");
+    toggle.hidden = !colour;
+    toggle.setAttribute("aria-pressed", String(showColour));
+    toggle.textContent = showColour ? "Hide colour" : "Show colour";
+  }
+  function colourOff(): void {
+    if (!showColour) return;
+    showColour = false;
+    updateColourToggle();
+  }
+  function paintColour(): void {
+    if (!colour) return;
+    const side = colour.side;
+    if (fieldCanvas.width !== side || fieldCanvas.height !== side) fieldCanvas.width = fieldCanvas.height = side;
+    const bitmap = fieldContext.createImageData(side, side);
+    const ranges = colour.channels.map((channel) => {
+      const values = Array.from(channel).filter(Number.isFinite).sort((a, b) => a - b);
+      return values.length ? [values[Math.floor((values.length - 1) * 0.05)], values[Math.floor((values.length - 1) * 0.997)]] : [0, 1];
+    });
+    const gain = stretchValue() === "faint" ? 64 : 16, linear = stretchValue() === "linear";
+    for (let y = 0; y < side; y++) for (let x = 0; x < side; x++) {
+      const source = (side - y - 1) * side + x, index = (y * side + x) * 4;
+      const missing = colour.channels.some((channel) => !Number.isFinite(channel[source]));
+      for (let c = 0; c < 3; c++) {
+        const value = colour.channels[c][source];
+        if (missing) { bitmap.data[index + c] = ((x + y) % 4 === 0 ? 29 : 17) + c * 4; continue; }
+        const t = Math.max(0, Math.min(1, (value - ranges[c][0]) / Math.max(ranges[c][1] - ranges[c][0], 1e-9)));
+        bitmap.data[index + c] = Math.round((linear ? t : Math.asinh(t * gain) / Math.asinh(gain)) * 250);
+      }
+      bitmap.data[index + 3] = 255;
+    }
+    fieldContext.putImageData(bitmap, 0, 0);
+  }
+  async function loadColour(): Promise<void> {
+    if (busy || !series) return;
+    const bands = ["colour-r", "colour-g", "colour-b"].map((id) => Number(get<HTMLSelectElement>(id).value));
+    const output = get("colour-status");
+    if (new Set(bands).size < 3) { output.textContent = "Choose three different bands."; return; }
+    const loadedBand = currentSelection?.band ?? 6, fov = currentSelection?.fov ?? 5, side = series.side, frames = series.frames;
+    pause();
+    busy = true; updateControls();
+    const controller = new AbortController();
+    const cancelColour = () => controller.abort();
+    interrupt = cancelColour;
+    try {
+      const channels: Float32Array[] = [];
+      for (const [i, band] of bands.entries()) {
+        if (band === loadedBand) { channels.push(SkyShift.deepStack(frames)); continue; }
+        output.textContent = status.textContent = `Colour: searching band ${band} (${i + 1} of 3)…`;
+        const query = new URLSearchParams({ ra: String(fixture.ra0), dec: String(fixture.dec0), band: String(band), fov: String(fov),
+          fromMjd: "60789", toMjd: String(Date.now() / 86400000 + 40587) });
+        const response = await fetch(`/api/observations?${query}`, { signal: controller.signal });
+        const data = await response.json().catch(() => null);
+        if (!response.ok || !data) throw new Error(data?.error ?? "server");
+        if (!data.observations.length) throw new Error(`No band ${band} observations cover this field.`);
+        const bandFixture = await SkyShift.makeLiveFixture(data.observations, fixture.ra0, fixture.dec0, fov, controller.signal, (done, total) => {
+          output.textContent = status.textContent = `Colour: downloading band ${band}, ${done} of ${total} observations…`;
+        }, cacheSelect.value !== "none");
+        const result = await submit(engineSelect.value as SkyShift.EngineName, "wise0855", cacheSelect.value as SkyShift.CacheLevel, () => {}, bandFixture, "visits");
+        interrupt = cancelColour;
+        channels.push(SkyShift.cropGrid(SkyShift.deepStack(result.series.frames), result.series.side, side));
+      }
+      colour = { bands, channels, side };
+      showColour = true;
+      updateColourToggle();
+      output.textContent = status.textContent = `Colour composite ready: red band ${bands[0]}, green band ${bands[1]}, blue band ${bands[2]}, all visits stacked.`;
+      busy = false;
+      commitView();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      output.textContent = status.textContent = controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError") ? "Colour composite cancelled."
+        : error instanceof TypeError || message === "server" ? "Colour composites need the SkyShift server (npm run dev) to fetch the other bands." : message;
+    } finally {
+      busy = false; interrupt = undefined; updateControls();
+    }
+  }
+  get("colour-load").addEventListener("click", () => void loadColour());
+  get("colour-toggle").addEventListener("click", () => { if (!colour) return; pause(); showColour = !showColour; updateColourToggle(); commitView(); });
+
+
   // ------------------------------------------------------------ panel ----
   let panelOpener: HTMLElement | null = null;
-  function openPanel(opener?: HTMLElement | null): void {
+  // Opening the panel only pans what matters into the uncovered map (never
+  // zooms); closing it returns to the earlier framing if the map was not moved.
+  let panelReturn: { camera: SkyShift.Camera; wasDefault: boolean } | null = null;
+  function openPanel(opener?: HTMLElement | null, focus?: [number, number]): void {
     pause();
     closePopovers();
     if (panel.hidden) {
+      const wasDefault = cameraIsDefault;
       panel.hidden = false;
       document.body.classList.add("panel-open");
       menuButton.setAttribute("aria-expanded", "true");
       panelOpener = opener ?? (document.activeElement instanceof HTMLElement ? document.activeElement : mapCanvas);
       measureChrome();
-      keepFieldVisible();
-    }
+      ensureVisible(...(focus ?? [fixture.ra0, fixture.dec0]));
+      panelReturn = { camera, wasDefault };
+      render();
+    } else if (focus) ensureVisible(...focus);
     get("panel-close").focus();
   }
   function closePanel(restoreFocus = true): void {
@@ -1193,16 +1631,9 @@ declare const ASSETS: {
     document.body.classList.remove("panel-open");
     menuButton.setAttribute("aria-expanded", "false");
     measureChrome();
-    if (cameraIsDefault) frameField(); else render();
+    if (cameraIsDefault || (panelReturn?.wasDefault && panelReturn.camera === camera)) frameField(); else render();
+    panelReturn = null;
     if (restoreFocus) (panelOpener && document.contains(panelOpener) && !panelOpener.closest("[hidden]") ? panelOpener : mapCanvas).focus();
-  }
-  function keepFieldVisible(): void {
-    if (cameraIsDefault) { frameField(); return; }
-    const p = toScreen(fixture.ra0, fixture.dec0);
-    if (!p) { render(); return; }
-    const [vx, vy] = visibleCentre();
-    if (p[0] < visible.left + 40 || p[0] > visible.right - 40 || p[1] > visible.bottom - 40 || p[1] < visible.top + 20) panScreen(vx - p[0], vy - p[1]);
-    else render();
   }
   menuButton.addEventListener("click", () => panel.hidden ? openPanel(menuButton) : closePanel());
   get("panel-close").addEventListener("click", () => closePanel());
@@ -1343,6 +1774,7 @@ declare const ASSETS: {
   let loadedFrameMode = modeSelect.value === "exposures" ? "exposures" : "visits";
   modeSelect.addEventListener("change", async () => {
     pause();
+    colourOff();
     const nextMode = modeSelect.value === "exposures" ? "exposures" : "visits";
     if (nextMode !== loadedFrameMode) {
       const previousFrame = frame;
@@ -1456,6 +1888,7 @@ declare const ASSETS: {
       button.append(preview, date, count, badges);
       button.addEventListener("click", () => {
         pause();
+        colourOff();
         if (modeSelect.value !== "exposures") modeSelect.value = "stack";
         frame = index;
         commitView();
@@ -1515,6 +1948,7 @@ declare const ASSETS: {
     }
     const previousFrame = frame; frame = 0;
     if (!await load(bundle.fixture)) { frame = previousFrame; return; }
+    frame = Number(referenceSelect.value) || 0;
     fullBandFixture = bundle.fixture; wavelengthSelection = null; isBundled = false;
     currentSelection = { ra: target.ra, dec: target.dec, band: target.band, fov: 5 };
     setFieldInfo(target.label, `RA ${target.ra.toFixed(6)}° · Dec ${target.dec.toFixed(6)}° · Band ${target.band} · 5′ field`, target.band, target.id);
@@ -1572,6 +2006,7 @@ declare const ASSETS: {
         frame = previousFrame;
         return;
       }
+      if (!savedAsof) frame = Number(referenceSelect.value) || 0;
       fullBandFixture = nextFixture;
       wavelengthSelection = null;
       clearCatalogues();
@@ -1645,6 +2080,7 @@ declare const ASSETS: {
     if (!searchDrop.hidden) { closeDrop(); return; }
     if (!layers.hidden) { setLayers(false); layersToggle.focus(); return; }
     if (selected) { hideHere(); mapCanvas.focus(); return; }
+    if (!candidateCard.hidden) { closeCandidates(); mapCanvas.focus(); return; }
     if (!panel.hidden) { closePanel(); return; }
     if (!hint.hidden) { dismissHint(); return; }
     pause();
@@ -1674,6 +2110,9 @@ declare const ASSETS: {
     } else if (key === "," || key === "<") { if (!busy && !playback) manualStep(-1); }
     else if (key === "." || key === ">") { if (!busy && !playback) manualStep(1); }
     else if (key === "b" || key === "B") toggleBlink();
+    else if (key === "f" || key === "F") findMoversNow();
+    else if (key === "t" || key === "T") { const [ra, dec] = selected ? [selected.ra, selected.dec] : toSky(...visibleCentre()); trackAt(ra, dec); }
+    else if ((key === "c" || key === "C") && colour) get("colour-toggle").click();
     else if (key === "d" || key === "D") toggleDifference();
     else if (key === "i" || key === "I") panel.hidden ? openPanel(target) : closePanel();
     else if (key === "/") { event.preventDefault(); query.focus(); }
@@ -1697,6 +2136,10 @@ declare const ASSETS: {
     if (restoredCamera) { camera = restoredCamera; cameraIsDefault = false; cameraChanged(); }
     else frameField(legacyLevel ?? fitLevel());
     saveState();
+  }
+  function restoreMark(): void {
+    const mark = params.get("mark")?.split(",").map(Number);
+    if (mark?.length === 2 && mark.every(Number.isFinite)) trackAt(mark[0], mark[1]);
   }
   const sharedRa = params.get("ra"), sharedDec = params.get("dec");
   const restoreWavelength = async () => {
@@ -1722,12 +2165,12 @@ declare const ASSETS: {
     }
     query.value = `${ra.toFixed(5)}, ${dec.toFixed(5)}`;
     void searchFromOptions(ra, dec, params.get("asof") ?? undefined).then(() => {
-      if (currentSelection) { applyInitialCamera(); return restoreWavelength(); }
+      if (currentSelection) { applyInitialCamera(); return restoreWavelength().then(restoreMark); }
       // The shared field failed to load: show the bundled example, keep the reason visible.
       const failure = status.textContent ?? "";
       return load().then(() => { applyInitialCamera(); status.textContent = failure; });
     });
   } else {
-    void load().then(() => { applyInitialCamera(); maybeShowHint(); return restoreWavelength(); });
+    void load().then(() => { applyInitialCamera(); maybeShowHint(); return restoreWavelength(); }).then(restoreMark);
   }
 })();

@@ -265,6 +265,13 @@ The interface is a full-screen sky map in the style of Google Maps. The whole vi
 - A click or tap opens a position card. It shows sexagesimal and decimal coordinates and, inside the field, the pixel value in MJy/sr, with **Center here**, **Details**, **Search here** and **Copy**. The card is also the single-pointer alternative to dragging.
 - Keyboard, with the map focused: arrows pan (Shift pans further), `+` and `−` zoom, `0` recenters, Space plays or pauses, `,` and `.` step frames, `B` toggles Blink, `D` toggles Difference, `I` opens details, `/` focuses search, `?` lists shortcuts. Esc closes the top layer, then pauses. In the thumbnail strip, ← and → step through visits.
 
+### Discovery tools
+
+- **Find movers** (`F`, in the timeline header) searches B − A for a negative residual next to a positive one of similar amplitude, at least a quarter of the source's own peak. That threshold rejects small misregistration of bright stars. A candidate card steps through the results and recentres the map; unpaired residuals are listed as brightness changes.
+- **Track & identify** (on the position card, or `T`) finds flux-weighted centroids in each frame, seeded from the previous frame. Saturated cores are located from their masked pixels. It fits linear motion with an error, and estimates variability with a 5% allowance for the different wavelengths sampled in each visit. `/api/identify` queries SIMBAD (CDS, then the Harvard mirror), Gaia DR3 and SkyBoT, propagating catalogue positions to the frame epoch. Entries within SPHEREx's resolution are ranked by bibliography, so a system outranks its component and a star its planets. The verdict lists its reasons. Before a catalogue check it only describes the object ("Moving source") and never calls it unidentified.
+- Reports use `mark=ra,dec` in the URL, plus a JSON download. The colour composite combines three detector bands stacked over all visits. Other bands are fetched on request with the same centre and grid, then cropped to the loaded field.
+- Verified on 2026-11-14 with all five targets: tracked motions match SIMBAD for WISE 0855, Barnard's Star and Epsilon Indi B. RW Aur and R Dra show no motion and are flagged variable, R Dra only before its saturation was handled. All five are identified correctly: Brown Dwarf, BY Dra Variable, Brown Dwarf, T Tauri Star, Mira Variable.
+
 ### Desktop and phone layout
 
 | Region | 900 CSS px and wider | Phones |

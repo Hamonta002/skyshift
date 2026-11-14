@@ -1,0 +1,11 @@
+.git
+node_modules
+dist
+reference/_work
+.agents
+.aws
+.codex
+.env
+.env.*
+*.md
+!README.md
