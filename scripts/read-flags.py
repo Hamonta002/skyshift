@@ -304,15 +304,21 @@ def read_flags(key, x, y, opener=urllib.request.urlopen):
     remote = RangeFile(BUCKET + key, opener)
     try:
         from astropy.io import fits
+    except ImportError:
+        fits = None
+    raw = None
+    if fits is not None:
         with fits.open(remote, memmap=False, lazy_load_hdus=True) as hdus:
             hdu = hdus['FLAGS']
             if tuple(hdu.shape) != (2040, 2040):
                 raise ValueError('Unsupported FLAGS image dimensions')
-            x0, x1 = max(x - 1, 0), min(x + 2, 2040)
-            y0, y1 = max(y - 1, 0), min(y + 2, 2040)
-            arr = hdu.section[y0:y1, x0:x1]
-            raw = [[int(v) & 0xffffffff for v in row] for row in arr]
-    except ImportError:
+            # Tile-compressed HDUs only gained .section in astropy 5.3 (Debian 12 ships 5.2).
+            section = getattr(hdu, 'section', None)
+            if section is not None:
+                x0, x1 = max(x - 1, 0), min(x + 2, 2040)
+                y0, y1 = max(y - 1, 0), min(y + 2, 2040)
+                raw = [[int(v) & 0xffffffff for v in row] for row in section[y0:y1, x0:x1]]
+    if raw is None:
         x0, y0, raw = _read_flags_stdlib(remote, x, y)
     combined = 0
     center_x = min(max(x - x0, 0), len(raw[0]) - 1)
