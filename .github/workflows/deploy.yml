@@ -6,6 +6,8 @@ name: Deploy to Azure
 on:
   push:
     branches: [main]
+    # Documentation is not part of the image, so editing it needs no redeploy.
+    paths-ignore: ["**.md"]
   workflow_dispatch:
 
 permissions:
@@ -16,10 +18,12 @@ concurrency:
   group: deploy-azure
   cancel-in-progress: false
 
+# A fork deploying to its own Azure subscription sets the AZURE_REGISTRY
+# repository variable (deploy/azure-setup.sh prints it); otherwise these defaults apply.
 env:
-  REGISTRY: ca361b59b371acr
-  APP: skyshift
-  RESOURCE_GROUP: skyshift
+  REGISTRY: ${{ vars.AZURE_REGISTRY || 'ca361b59b371acr' }}
+  APP: ${{ vars.AZURE_APP || 'skyshift' }}
+  RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP || 'skyshift' }}
 
 jobs:
   test:
