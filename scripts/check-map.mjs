@@ -129,10 +129,13 @@ close(sexagesimal.dec, -7.24514722, 1e-7, 'sexagesimal Dec');
 const spaced = sky.parseQuery('08h 55m 10.831s -07d 14m 42.53s');
 close(spaced.ra, 133.795129167, 1e-7, 'spaced sexagesimal RA');
 assert.deepEqual(sky.parseQuery('08:55:10.8, -07:14:42').kind, 'coordinates');
-for (const bad of ['', '133.76', '133.76, -95', 'Andromeda', '1 2 3']) {
+for (const bad of ['', '133.76', '133.76, -95', '1 2 3', 'x'.repeat(81)]) {
   assert.throws(() => sky.parseQuery(bad), /./, `rejects ${JSON.stringify(bad)}`);
 }
-assert.match((() => { try { sky.parseQuery('Andromeda'); } catch (error) { return error.message; } })(), /five examples/);
+// Any other name is looked up by the server.
+assert.deepEqual(sky.parseQuery('Andromeda  Galaxy'), { kind: 'name', name: 'Andromeda Galaxy' });
+assert.deepEqual(sky.parseQuery('M42'), { kind: 'name', name: 'M42' });
+assert.deepEqual(sky.parseQuery("Barnard's Star").kind, 'target');
 assert.deepEqual(sky.matchTargets('r').map((target) => target.id), ['rwaur', 'rdra']);
 
 console.log('Map projection, zoom, grid, view-state and search parsing checks passed.');

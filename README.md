@@ -23,10 +23,13 @@ The browser also needs direct cross-origin range access to the public SPHEREx
 S3 bucket for image pixels. Deploying this application publicly requires a host
 that runs the search route and verification of cross-origin access.
 
-The viewer is a full-screen sky map. It opens on WISE 0855 at 8 screen pixels per image pixel. Drag to pan, and scroll or pinch to zoom. Click any point for its coordinates and pixel value, and press `?` for keyboard shortcuts. Moving the map never replaces the loaded data; use **Search this area** to load a new field. The search box takes an example name, or RA and Dec. It accepts decimal degrees or complete sexagesimal RA and declination,
+The viewer is a full-screen sky map. It opens on WISE 0855 at 8 screen pixels per image pixel. Drag to pan, and scroll or pinch to zoom. Click any point for its coordinates and pixel value, and press `?` for keyboard shortcuts. Moving the map never replaces the loaded data; use **Search this area** to load a new field. The search box takes
+the name of any star, galaxy or nebula (for example Betelgeuse or M42), or RA and Dec. Names are looked up on the
+server through CDS Sesame and moved to the current date with their proper motion; SIMBAD supplies the object type
+shown in the panel, and shared links keep the name. Coordinates may be decimal degrees or complete sexagesimal RA and declination,
 with the detector band, field of view and dates under search options. The example chips open a bundled example
-directly; an example that is not bundled in the build is fetched through the live search. Only WISE 0855 is
-bundled offline. The live path queries IRSA for observations,
+directly, with a one-line hint on what to look for; an example that is not bundled in the build is fetched through
+the live search. All five examples are bundled for offline use. The live path queries IRSA for observations,
 downloads a bounded sample, and computes visit stacks locally. It includes
 individual exposures, visual sum/difference, centre-wavelength filtering, a preliminary
 spectrum, shareable coordinates, and JSON metadata export. Nominal channel centres
@@ -45,9 +48,12 @@ adding their collection names; this does not change the numerical kernel.
 
 ## Discover and identify
 
-- **Find movers** (or `F`) looks for the signature of a moving source in B − A:
-  a fading spot next to a brightening one. You can then step through the
-  candidates. Sources that only changed brightness are listed separately.
+- **Find movers** (or `F`) looks for the signature of a moving source in B − A
+  (**What changed**): a fading spot next to a brightening one. It runs on its
+  own whenever A and B are set, and the button shows what it found; press it
+  to step through the candidates. Sources that only changed brightness are
+  listed separately. By default A and B are the two full visits furthest apart
+  in time, so slow movers shift the most.
 - **Track & identify** (click a source, or `T`) measures the source's position
   and brightness in every visit, fits its motion in arcsec per year, and draws
   its path. It then checks SIMBAD (with the Harvard mirror as a fallback), Gaia
@@ -121,6 +127,7 @@ persistent-cache reload, and a public deployment (the container image builds
 locally). The wavelength filter selects exposure bandpasses at the field centre; it is
 not a time-resolved 102-channel calibrated cube. The Gaia catalogue route answers live;
 the overlay drawing and CatWISE are tested only offline. The FLAGS reader has not yet been validated against a real compressed product.
+Engine, cache and benchmark controls are hidden unless the URL includes `debug=1`.
 Calibrated uncertainty and scientifically matched photometry are not implemented. The spectrum is approximate, uses uncorrected aperture flux and
 has not been validated as a scientific measurement. Broad-band sums and
 differences are visual diagnostics: wavelength, PSF, quality flags and

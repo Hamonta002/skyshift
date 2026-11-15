@@ -11,7 +11,7 @@
 </head>
 <body>
   <canvas id="map" class="map" tabindex="0" role="img" aria-label="SPHEREx sky map" aria-describedby="map-help"></canvas>
-  <p id="map-help" class="sr-only">Sky map, north up and east left. Drag or use the arrow keys to pan, plus and minus to zoom, 0 to return to the field. Space plays visits, B blinks A and B, D shows the difference. Press question mark for all shortcuts.</p>
+  <p id="map-help" class="sr-only">Sky map, north up and east left. Drag or use the arrow keys to pan, plus and minus to zoom, 0 to return to the field. Space plays visits, B blinks A and B, D shows what changed. Press question mark for all shortcuts.</p>
 
   <div id="field-label" class="field-label" aria-hidden="true"><span id="active-slot" class="slot-badge" hidden></span><span id="field-date"></span></div>
   <button id="offscreen" class="offscreen" type="button" hidden><span class="offscreen-arrow" id="offscreen-arrow" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12h12m-5-6 6 6-6 6"/></svg></span><span id="offscreen-text"></span></button>
@@ -21,8 +21,8 @@
       <div class="search-column">
       <form id="search" class="searchbox" role="search" autocomplete="off">
         <button id="menu" class="icon-button brand-button" type="button" aria-label="Field details" aria-controls="panel" aria-expanded="false"><span class="brand-mark" aria-hidden="true"></span></button>
-        <label class="sr-only" for="query">Search a target, or RA and Dec</label>
-        <input id="query" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="suggestions" aria-describedby="query-preview" spellcheck="false" enterkeyhint="search" placeholder="Search a target or RA, Dec">
+        <label class="sr-only" for="query">Search an object by name, or RA and Dec</label>
+        <input id="query" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="suggestions" aria-describedby="query-preview" spellcheck="false" enterkeyhint="search" placeholder="Search a star, galaxy or RA, Dec">
         <button id="query-clear" class="icon-button" type="button" aria-label="Clear search" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
         <button id="options-toggle" class="icon-button" type="button" aria-label="Search options: band, field and dates" aria-expanded="false" aria-controls="search-options"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10m4 0h2M4 17h4m4 0h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg></button>
         <button class="icon-button search-submit" type="submit" aria-label="Search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/></svg></button>
@@ -71,7 +71,7 @@
           <canvas id="object-curve" width="720" height="210" role="img" aria-label="Brightness per visit"></canvas>
           <figcaption>Brightness in each visit (magnitudes relative to the median; up is brighter). SPHEREx samples different wavelengths within a band from visit to visit, so part of a change can be spectral. Hollow points are saturated (lower limits).</figcaption>
         </figure>
-        <button id="object-spectrum" class="primary" type="button">Generate Spectrum</button>
+        <button id="object-spectrum" class="primary" type="button">Show spectrum</button>
         <details class="object-positions"><summary>Positions in each visit</summary><div class="table-scroll"><table id="object-table"></table></div></details>
         <div class="object-actions">
           <button id="report-link" type="button">Copy report link</button>
@@ -89,11 +89,11 @@
         <p id="inspect-frame" class="inspect-frame"></p>
         <label class="inline-field">View
           <select id="mode">
-            <option value="stack">Visit stacks</option>
-            <option value="exposures">Individual exposures</option>
-            <option value="blink">Blink pair</option>
-            <option value="sum">Sum A + B</option>
-            <option value="difference">Difference B − A</option>
+            <option value="stack">Each visit</option>
+            <option value="exposures">Every single image</option>
+            <option value="blink">Blink A and B</option>
+            <option value="sum">A and B added together</option>
+            <option value="difference">What changed (B − A)</option>
           </select>
         </label>
       </section>
@@ -112,8 +112,8 @@
       </details>
       <details class="tools">
         <summary>Spectrum</summary>
-        <p>Quick-look spectrum uses approximate aperture photometry.</p>
-        <button id="spectrum" type="button">Calculate spectrum</button>
+        <p>A quick, approximate spectrum of the source at the centre of the field. To measure another source, click it on the map and choose Spectrum.</p>
+        <button id="spectrum" type="button">Show spectrum</button>
         <p id="spectrum-status" role="status"></p>
         <canvas id="spectrum-chart" width="760" height="260" hidden aria-label="Spectrum chart" role="img"></canvas>
         <a id="spectrum-download" hidden download="skyshift-spectrum.csv">Download spectrum CSV</a>
@@ -173,7 +173,7 @@
           <div class="benchmark-output" id="benchmark-output" aria-live="polite"></div>
         </section>
       </details>
-      <p class="panel-about">SkyShift is for visual exploration of SPHEREx DR1 spectral images. Sums and differences are not wavelength-, PSF- or uncertainty-matched; do not use them for scientific claims. Data: NASA/IPAC Infrared Science Archive, <a href="https://doi.org/10.26131/IRSA678">10.26131/IRSA678</a>.</p>
+      <p class="panel-about">SkyShift is for exploring SPHEREx images by eye. Its comparisons are visual, not calibrated measurements, so confirm anything interesting before calling it a discovery. Data: NASA/IPAC Infrared Science Archive, <a href="https://doi.org/10.26131/IRSA678">10.26131/IRSA678</a>.</p>
     </div>
   </aside>
 
@@ -228,10 +228,11 @@
   </div>
 
   <div class="bottom-stack" id="bottom-stack">
-    <div id="difference-scale" class="difference-scale" hidden aria-label="Symmetric difference scale in megajanskys per steradian">
-      <span class="difference-title">B − A · visual diagnostic, not calibrated</span>
+    <div id="difference-scale" class="difference-scale" hidden>
+      <span class="difference-title">What changed from A to B</span>
       <span class="difference-bar" aria-hidden="true"></span>
-      <span id="difference-negative"></span><span>0</span><span id="difference-positive"></span><span>MJy/sr</span>
+      <span>Brighter in A</span><span>No change</span><span>Brighter in B</span>
+      <small class="difference-units">Scale ±<span id="difference-limit"></span> MJy/sr · visual only, not calibrated</small>
     </div>
     <div id="toast" class="toast">
       <p id="status" role="status">Preparing viewer…</p>
@@ -246,7 +247,7 @@
         <button id="candidate-prev" type="button" aria-label="Previous candidate"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button>
         <button id="candidate-next" type="button" aria-label="Next candidate"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 6 6 6-6 6"/></svg></button>
         <button id="candidate-blink" type="button">Blink</button>
-        <button id="candidate-spectrum" type="button">Generate Spectrum</button>
+        <button id="candidate-spectrum" type="button">Spectrum</button>
         <button id="candidate-track" class="primary" type="button">Track &amp; identify</button>
         <button id="candidate-close" class="icon-button" type="button" aria-label="Close candidates"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
       </div>
@@ -259,8 +260,8 @@
         <small id="here-brightness-note" class="brightness-note"></small>
       </div>
       <div class="here-actions">
-        <button id="here-spectrum-open" class="primary" type="button">Generate Spectrum</button>
         <button id="here-track" class="primary" type="button" title="Track and identify (T)">Track &amp; identify</button>
+        <button id="here-spectrum-open" type="button">Spectrum</button>
         <button id="here-center" type="button">Center here</button>
         <button id="here-search" type="button">Search here</button>
         <button id="here-copy" type="button">Copy</button>
@@ -269,7 +270,7 @@
     </div>
     <div id="quick-spectrum-card" class="whats-here quick-spectrum" hidden role="group" aria-labelledby="quick-spectrum-title">
       <div class="spectrum-card-head">
-        <div class="here-text"><strong id="quick-spectrum-title">On-the-fly spectrum</strong><span id="quick-spectrum-status" role="status"></span></div>
+        <div class="here-text"><strong id="quick-spectrum-title">Spectrum</strong><span id="quick-spectrum-status" role="status"></span></div>
         <button id="quick-spectrum-close" class="icon-button" type="button" aria-label="Close spectrum">×</button>
       </div>
       <label class="spectrum-metric">Plot <select id="quick-spectrum-metric">
@@ -287,7 +288,7 @@
     <div class="dock-head">
       <h2>Observations</h2>
       <span id="visit-total" class="visit-total"></span>
-      <button id="find-movers" class="pill-button" type="button" title="Find sources that moved or changed between A and B (F)"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="7" cy="15" r="2.5"/><circle cx="16" cy="9" r="2.5"/><path d="M9 13.5 13.8 10.5"/></svg>Find movers</button>
+      <button id="find-movers" class="pill-button" type="button" title="Look for sources that moved or changed between A and B (F)"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="7" cy="15" r="2.5"/><circle cx="16" cy="9" r="2.5"/><path d="M9 13.5 13.8 10.5"/></svg><span id="find-movers-label">Find movers</span></button>
       <span id="observation" class="observation">Aligning observations…</span>
       <button id="dock-collapse" class="icon-button dock-collapse" type="button" aria-expanded="true" aria-controls="visits" aria-label="Hide thumbnails"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
     </div>
@@ -305,13 +306,13 @@
         </div>
         <div class="compare-actions">
           <button id="blink" type="button" class="primary" aria-pressed="false" title="Blink A and B (B)">Blink</button>
-          <button id="difference" type="button" aria-pressed="false" title="Difference B − A (D)">Difference</button>
+          <button id="difference" type="button" aria-pressed="false" title="Show what changed from A to B (D)">What changed</button>
         </div>
         <p id="compare-hint" class="compare-hint"></p>
       </div>
     </div>
     <div id="hint" class="hint" role="note" hidden>
-      <p id="hint-text">A and B are set to the two full visits. Press <b>Blink</b> to watch WISE 0855 move.</p>
+      <p id="hint-text">WISE 0855 is the coldest known brown dwarf, 7.4 light-years away. Press <b>Blink</b> to watch it move.</p>
       <button id="hint-dismiss" type="button">Got it</button>
     </div>
   </section>
@@ -328,7 +329,7 @@
       <dt><kbd>Space</kbd></dt><dd>Play or pause visits</dd>
       <dt><kbd>,</kbd> <kbd>.</kbd></dt><dd>Previous or next frame</dd>
       <dt><kbd>B</kbd></dt><dd>Blink A and B</dd>
-      <dt><kbd>D</kbd></dt><dd>Toggle Difference B − A</dd>
+      <dt><kbd>D</kbd></dt><dd>Show or hide what changed from A to B</dd>
       <dt><kbd>F</kbd></dt><dd>Find sources that moved or changed between A and B</dd>
       <dt><kbd>T</kbd></dt><dd>Track and identify the object at the selected point (or the view centre)</dd>
       <dt><kbd>C</kbd></dt><dd>Show or hide the colour composite once loaded</dd>

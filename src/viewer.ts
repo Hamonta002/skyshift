@@ -62,7 +62,9 @@ declare const ASSETS: {
   let wavelengthSelection: { min: number; max: number } | null = null;
   let searchController: AbortController | undefined;
   let isBundled = true;
-  let currentSelection: { ra: number; dec: number; band: number; fov: number; from?: string; to?: string; asof?: string } | undefined;
+  let currentSelection: { ra: number; dec: number; band: number; fov: number; from?: string; to?: string; asof?: string; name?: string } | undefined;
+  /** A field opened by name: an example, or any object looked up by the server. */
+  type Named = { label: string; id?: string; band?: number; description?: string | null };
   const loadedBand = () => currentSelection?.band ?? 6;
   let currentPixels: Float32Array | undefined;
   let currentTargetId: string | undefined = "wise0855";
@@ -85,6 +87,9 @@ declare const ASSETS: {
   }
 
   const params = new URLSearchParams(location.search);
+  // Engine, cache and benchmark controls are for development; ?debug=1 shows them.
+  const debug = params.get("debug") === "1";
+  if (!debug) document.querySelector<HTMLElement>(".diagnostics")!.hidden = true;
   const requestedEngine = params.get("engine");
   if (requestedEngine === "rust" || requestedEngine === "typescript") engineSelect.value = requestedEngine;
   const requestedCache = params.get("cache");
@@ -153,9 +158,9 @@ declare const ASSETS: {
       url.searchParams.set("waveMax", String(wavelengthSelection.max));
     } else { url.searchParams.delete("waveMin"); url.searchParams.delete("waveMax"); }
     if (currentSelection) {
-      url.searchParams.delete("from"); url.searchParams.delete("to");
+      url.searchParams.delete("from"); url.searchParams.delete("to"); url.searchParams.delete("name");
       for (const [key, value] of Object.entries(currentSelection)) url.searchParams.set(key, String(value));
-    } else for (const key of ["ra", "dec", "band", "fov", "from", "to", "asof"]) url.searchParams.delete(key);
+    } else for (const key of ["ra", "dec", "band", "fov", "from", "to", "asof", "name"]) url.searchParams.delete(key);
     // Keep the map position readable, Google-Maps style: at=ra,dec,zoom.
     if (tracked) url.searchParams.set("mark", `${tracked.start.ra.toFixed(6)},${tracked.start.dec.toFixed(6)}`);
     else url.searchParams.delete("mark");
@@ -219,6 +224,18 @@ declare const ASSETS: {
   }
 
   const fieldSide = () => 2 * fixture.half + 1;
+  const imagesText = (n: number) => `${n} image${n === 1 ? "" : "s"}`;
+  /**
+   * True when the inner part of the image has a block of masked pixels, which
+   * SPHEREx leaves where a star saturates the detector. Edge gaps from
+   * alignment are ignored.
+   */
+  function maskedCore(pixels: Float32Array, side: number): boolean {
+    const from = Math.floor(side * 0.1), to = Math.ceil(side * 0.9);
+    let masked = 0;
+    for (let y = from; y < to; y++) for (let x = from; x < to; x++) if (!Number.isFinite(pixels[y * side + x]) && ++masked >= 9) return true;
+    return false;
+  }
   const fieldName = () => get("target").textContent ?? "Field";
   function arithmeticView(): boolean {
     return canCompare() && (modeSelect.value === "sum" || modeSelect.value === "difference");
@@ -236,28 +253,26 @@ declare const ASSETS: {
     const arithmetic = view === "sum" || view === "difference";
     const pixels = arithmetic ? SkyShift.combineFrames(series.frames[a], series.frames[b], view) : series.frames[frame];
     currentPixels = pixels;
+    const maskNote = maskedCore(pixels, side) ? " · ▨ too bright to measure" : "";
     const colourView = showColour && !!colour && colour.side === side;
     const limit = colourView ? 0 : paint(fieldCanvas, fieldContext, pixels, side, view);
     if (colourView) paintColour();
     const differenceScale = get("difference-scale");
     differenceScale.hidden = view !== "difference" || colourView;
-    if (view === "difference") {
-      get("difference-negative").textContent = `−${limit.toPrecision(2)}`;
-      get("difference-positive").textContent = `+${limit.toPrecision(2)}`;
-    }
+    if (view === "difference") get("difference-limit").textContent = limit.toPrecision(2);
     difference.setAttribute("aria-pressed", String(view === "difference"));
     const count = series.counts[frame];
     const shallow = count < 5 && modeSelect.value !== "exposures";
     observation.textContent = colourView ? `Colour composite · red band ${colour!.bands[0]} · green band ${colour!.bands[1]} · blue band ${colour!.bands[2]} · all visits`
       : arithmetic
-      ? `${view === "difference" ? "Visual difference B − A" : "Visual sum A + B"} · A ${labelFor(a)} · B ${labelFor(b)}`
-      : `${labelFor(frame)} · ${count} ${count === 1 ? "exposure" : "exposures"}${shallow ? " · Shallow frame" : ""}`;
+      ? `${view === "difference" ? "What changed" : "A and B added"} · A ${labelFor(a)} · B ${labelFor(b)}`
+      : `${labelFor(frame)} · ${imagesText(count)}${shallow ? " · few images, noisier" : ""}`;
     const slot = get("active-slot");
     slot.textContent = view === "blink" ? (frame === a ? "A" : frame === b ? "B" : "") : "";
     slot.hidden = slot.textContent === "";
     fieldDateText = colourView ? `Colour · bands ${colour!.bands.join(" / ")}` : arithmetic
-      ? (view === "difference" ? `B − A · ${labelFor(b)} − ${labelFor(a)}` : `A + B · ${labelFor(a)} + ${labelFor(b)}`)
-      : `${labelFor(frame)} · ${count} exp${shallow ? " · shallow" : ""}`;
+      ? (view === "difference" ? `What changed · ${labelFor(a)} → ${labelFor(b)}` : `A + B · ${labelFor(a)} + ${labelFor(b)}`) + maskNote
+      : `${labelFor(frame)} · ${imagesText(count)}${shallow ? " · noisier" : ""}${maskNote}`;
     get("inspect-frame").textContent = observation.textContent;
     get("bundled-provenance").hidden = !isBundled;
     get("attribution-provenance").hidden = !isBundled;
@@ -529,7 +544,7 @@ declare const ASSETS: {
       fieldLabel.style.transform = `translate(${cx}px, ${small ? (minY + maxY) / 2 - 14 : minY - 6}px) translate(-50%, -100%)`;
       fieldLabel.dataset.small = String(small);
       const angularSize = fieldSide() * fixture.scale / 60;
-      const sizeLabel = `${angularSize < 10 ? angularSize.toFixed(1) : angularSize.toFixed(0)}′ cutout`;
+      const sizeLabel = `${angularSize < 10 ? angularSize.toFixed(1) : angularSize.toFixed(0)}′ wide`;
       get("field-date").textContent = `${small ? fieldName() : fieldDateText} · ${sizeLabel}`;
     }
     offscreen.hidden = onScreen || !series;
@@ -765,16 +780,16 @@ declare const ASSETS: {
     if (!selected) return;
     const { ra, dec } = selected;
     const pixel = pixelAt(ra, dec);
-    const viewLabel = arithmeticView() ? (modeSelect.value === "difference" ? "B − A" : "A + B") : labelFor(frame);
+    const viewLabel = arithmeticView() ? (modeSelect.value === "difference" ? "What changed" : "A + B") : labelFor(frame);
     get("here-title").textContent = pixel.inside ? `${fieldName()} · ${viewLabel}` : "Sky position";
     get("here-coords").textContent = `${SkyShift.formatRa(ra, 0.01)} ${SkyShift.formatDec(dec, 0.1)} · ${ra.toFixed(5)}°, ${dec.toFixed(5)}°`;
     const hasValue = pixel.inside && Number.isFinite(pixel.value);
-    get("here-value").textContent = !pixel.inside ? "Outside SPHEREx cutout footprint"
-      : hasValue ? `${valueText(pixel.value)} at this pixel` : "No data at this pixel";
+    get("here-value").textContent = !pixel.inside ? "Outside the SPHEREx image"
+      : hasValue ? `${valueText(pixel.value)} at this pixel` : "No measurement here, usually because a star is too bright";
     const note = get("here-brightness-note");
     note.hidden = !hasValue;
-    note.textContent = arithmeticView() ? "Visual comparison of background-subtracted visits."
-      : "Median background removed from each exposure before display.";
+    note.textContent = arithmeticView() ? "A visual comparison of the two visits, not a calibrated measurement."
+      : "Brightness above the sky background.";
     get("here-track").hidden = !pixel.inside;
     get<HTMLButtonElement>("here-spectrum-open").disabled = !pixel.inside;
     get("here-search").hidden = pixel.inside || embed;
@@ -1143,12 +1158,13 @@ declare const ASSETS: {
       closeQuickSpectrum();
       rebuildVisits();
       commitView();
+      previewMovers();
       const source = {
         miss: "Computed from exposures",
         inputs: "Rebuilt from cached exposures",
         results: "Loaded cached frames",
       }[loaded.cacheHit];
-      status.textContent = routineStatus = `${source} · ${nameOf(engine)} · ${elapsed(performance.now() - started)}`;
+      status.textContent = routineStatus = debug ? `${source} · ${nameOf(engine)} · ${elapsed(performance.now() - started)}` : "Ready";
       return true;
     } catch (error) {
       status.textContent = error instanceof Error ? error.message : String(error);
@@ -1428,6 +1444,7 @@ declare const ASSETS: {
     if (modeSelect.value === "blink") frame = Number(referenceSelect.value);
     updateVisitBadges();
     commitView();
+    previewMovers();
   });
   for (const input of stretchInputs) input.addEventListener("change", () => {
     pause();
@@ -1689,26 +1706,52 @@ declare const ASSETS: {
     candidates = SkyShift.findMovers(series.frames[a], series.frames[b], series.side);
     if (!candidates.length) {
       candidateCard.hidden = true;
-      status.textContent = `Nothing moved or changed between ${labelFor(a)} and ${labelFor(b)} above the detection threshold.`;
+      status.textContent = `Nothing clearly moved or changed between ${labelFor(a)} and ${labelFor(b)}.`;
       render();
       return;
     }
     hideHere();
     candidateIndex = 0;
     showCandidate();
-    const movers = candidates.filter((c) => c.kind === "mover").length, changes = candidates.length - movers;
-    status.textContent = `${movers} moving-source candidate${movers === 1 ? "" : "s"} and ${changes} brightness change${changes === 1 ? "" : "s"} between A and B.`;
+    status.textContent = `Found ${findingsText(candidates)} between A and B.`;
+  }
+  /** "1 possible moving object and 2 brightness changes", leaving out zero counts. */
+  function findingsText(found: SkyShift.MoverCandidate[]): string {
+    const movers = found.filter((c) => c.kind === "mover").length, changes = found.length - movers;
+    const parts = [];
+    if (movers) parts.push(`${movers} possible moving object${movers === 1 ? "" : "s"}`);
+    if (changes) parts.push(`${changes} brightness change${changes === 1 ? "" : "s"}`);
+    return parts.join(" and ");
+  }
+  function strengthText(score: number): string {
+    return score >= 20 ? "very strong signal" : score >= 10 ? "strong signal" : score >= 6 ? "clear signal" : "faint signal, check it by eye";
+  }
+  /**
+   * Runs the mover finder quietly whenever A and B are ready, so the button can
+   * say what it found before anyone presses it.
+   */
+  const findMoversButton = get<HTMLButtonElement>("find-movers"), findMoversLabel = get("find-movers-label");
+  function previewMovers(): void {
+    const ready = !!series && canCompare() && modeSelect.value !== "exposures";
+    const found = ready ? SkyShift.findMovers(series!.frames[Number(referenceSelect.value)], series!.frames[Number(comparisonSelect.value)], series!.side) : [];
+    const movers = found.filter((c) => c.kind === "mover").length, changes = found.length - movers;
+    findMoversLabel.textContent = movers ? `${movers} possible mover${movers === 1 ? "" : "s"}`
+      : changes ? `${changes} brightness change${changes === 1 ? "" : "s"}` : ready ? "Nothing moved" : "Find movers";
+    findMoversButton.classList.toggle("found", found.length > 0);
+    findMoversButton.title = found.length ? `Show the ${findingsText(found)} found between A and B (F)`
+      : "Look for sources that moved or changed between A and B (F)";
   }
   function showCandidate(): void {
     const c = candidates[candidateIndex];
     if (!c) return;
     candidateCard.hidden = false;
     const a = Number(referenceSelect.value), b = Number(comparisonSelect.value);
-    get("candidate-title").textContent = `${c.kind === "mover" ? "Moving-source candidate" : c.kind === "brighter" ? "Got brighter" : "Got fainter"} · ${candidateIndex + 1} of ${candidates.length}`;
-    const strength = c.score >= 1000 ? "S/N over 1000" : `S/N ${c.score.toFixed(0)}`;
-    get("candidate-detail").textContent = c.kind === "mover"
-      ? `Shifted ${(c.shift * fixture.scale).toFixed(1)}″ between A (${labelFor(a)}) and B (${labelFor(b)}) · ${strength}`
-      : `Changed between A (${labelFor(a)}) and B (${labelFor(b)}) without moving · ${strength}`;
+    get("candidate-title").textContent = `${c.kind === "mover" ? "Possible moving object" : c.kind === "brighter" ? "Got brighter" : "Got fainter"} · ${candidateIndex + 1} of ${candidates.length}`;
+    const detail = get("candidate-detail");
+    detail.textContent = c.kind === "mover"
+      ? `Moved ${(c.shift * fixture.scale).toFixed(1)}″ between ${labelFor(a)} and ${labelFor(b)} · ${strengthText(c.score)}`
+      : `Changed brightness between ${labelFor(a)} and ${labelFor(b)} without moving · ${strengthText(c.score)}`;
+    detail.title = c.score >= 1000 ? "Signal-to-noise over 1000" : `Signal-to-noise ${c.score.toFixed(0)}`;
     for (const id of ["candidate-prev", "candidate-next"]) get<HTMLButtonElement>(id).disabled = candidates.length < 2;
     // Bring it into view, zoomed in enough to judge it by eye.
     const [ra, dec] = SkyShift.gridToSky(fixture, c.x, c.y);
@@ -1955,6 +1998,7 @@ declare const ASSETS: {
         const parsed = SkyShift.parseQuery(text);
         queryPreview.textContent = parsed.kind === "target"
           ? `Enter opens ${parsed.target.label}.`
+          : parsed.kind === "name" ? `Enter looks up “${parsed.name}” and searches SPHEREx there.`
           : `RA ${parsed.ra.toFixed(5)}° (${SkyShift.formatRa(parsed.ra, 0.1)}) · Dec ${parsed.dec.toFixed(5)}° (${SkyShift.formatDec(parsed.dec, 1)}) · band ${bandSelect.value} · ${fovSelect.value}′. Enter searches the archive.`;
       } catch (error) {
         queryPreview.classList.add("invalid");
@@ -1999,8 +2043,35 @@ declare const ASSETS: {
       return;
     }
     if (parsed.kind === "target") void openExample(parsed.target.id);
+    else if (parsed.kind === "name") void lookUp(parsed.name);
     else void searchFromOptions(parsed.ra, parsed.dec);
   });
+  /** "betelgeuse" → "Betelgeuse", "m42" → "M42"; names typed with capitals are kept. */
+  function displayName(text: string): string {
+    return text === text.toLowerCase() ? text.replace(/(^|\s)\S/g, (letter) => letter.toUpperCase()) : text;
+  }
+  async function lookUp(name: string): Promise<void> {
+    if (busy) return;
+    closeDrop();
+    status.textContent = `Looking up ${displayName(name)}…`;
+    let found: { ra: number; dec: number; description: string | null };
+    try {
+      const response = await fetch(`/api/resolve?${new URLSearchParams({ name })}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The name lookup failed.");
+      found = data;
+    } catch (error) {
+      const message = error instanceof TypeError || error instanceof SyntaxError
+        ? "Looking up names needs the SkyShift server. Enter RA and Dec instead."
+        : error instanceof Error ? error.message : String(error);
+      status.textContent = message;
+      openDrop();
+      queryPreview.classList.add("invalid");
+      queryPreview.textContent = message;
+      return;
+    }
+    await searchFromOptions(found.ra, found.dec, undefined, { label: displayName(name), description: found.description });
+  }
 
   const chips = get("chips");
   chips.replaceChildren(...SkyShift.TARGETS.map((target) => {
@@ -2012,9 +2083,9 @@ declare const ASSETS: {
     chip.addEventListener("click", () => void openExample(target.id));
     return chip;
   }));
-  function setFieldInfo(name: string, coordinates: string, band: number, targetId?: string): void {
+  function setFieldInfo(name: string, coordinates: string, band: number, targetId?: string, description?: string | null): void {
     get("target").textContent = name;
-    get("coordinates").textContent = coordinates;
+    get("coordinates").textContent = description ? `${description} · ${coordinates}` : coordinates;
     get("field-survey").textContent = `SPHEREx · band ${band}`;
     shownName = name;
     query.value = name;
@@ -2023,7 +2094,7 @@ declare const ASSETS: {
     for (const chip of chips.querySelectorAll<HTMLButtonElement>("button")) chip.setAttribute("aria-pressed", String(chip.dataset.target === targetId));
     bandSelect.value = String(band);
     layerBandSelect.value = String(band);
-    if (targetId !== "wise0855") hint.hidden = true;
+    hint.hidden = true;
   }
 
   let loadedFrameMode = modeSelect.value === "exposures" ? "exposures" : "visits";
@@ -2102,7 +2173,9 @@ declare const ASSETS: {
     const key = `${fixture.id}:${modeSelect.value === "exposures" ? "exposures" : "visits"}`;
     const candidates = labels.map((_, index) => index);
     const full = candidates.filter((index) => series!.counts[index] >= 5);
-    const defaults = (full.length >= 2 ? full : candidates).slice(-2);
+    // The two full visits furthest apart in time: slow movers shift the most.
+    const pool = full.length >= 2 ? full : candidates;
+    const defaults = pool.length >= 2 ? [pool[0], pool[pool.length - 1]] : pool;
     const firstLoad = pairSequence === undefined;
     const unchanged = pairSequence === key;
     const legacyA = params.get("reference");
@@ -2141,7 +2214,7 @@ declare const ASSETS: {
       const count = document.createElement("span");
       count.className = "visit-count";
       const n = series!.counts[index];
-      count.textContent = `${n} ${n === 1 ? "exposure" : "exposures"}${n < 5 && modeSelect.value !== "exposures" ? " · Shallow" : ""}`;
+      count.textContent = `${imagesText(n)}${n < 5 && modeSelect.value !== "exposures" ? " · noisier" : ""}`;
       const badges = document.createElement("span");
       badges.className = "visit-badges";
       badges.setAttribute("aria-hidden", "true");
@@ -2156,7 +2229,7 @@ declare const ASSETS: {
       return button;
     });
     container.replaceChildren(...visits);
-    get("visit-total").textContent = `${labels.length} ${modeSelect.value === "exposures" ? "exposures" : labels.length === 1 ? "visit" : "visits"}`;
+    get("visit-total").textContent = modeSelect.value === "exposures" ? imagesText(labels.length) : `${labels.length} ${labels.length === 1 ? "visit" : "visits"}`;
     updateVisitBadges();
     refreshThumbnails();
   }
@@ -2190,6 +2263,8 @@ declare const ASSETS: {
         hideHere();
         frameField();
         commitView();
+        status.textContent = "Ready · saved example";
+        maybeShowHint();
       } else frame = previousFrame;
       return;
     }
@@ -2218,10 +2293,11 @@ declare const ASSETS: {
     hideHere();
     frameField();
     commitView();
-    status.textContent += " · Bundled sampled observations";
+    status.textContent = "Ready · saved example";
+    maybeShowHint();
   }
 
-  async function searchFromOptions(ra: number, dec: number, savedAsof?: string, target?: SkyShift.Target): Promise<void> {
+  async function searchFromOptions(ra: number, dec: number, savedAsof?: string, target?: Named): Promise<void> {
     const band = target?.band ?? Number(bandSelect.value);
     const fov = Number(fovSelect.value);
     const from = get<HTMLInputElement>("date-from").value, to = get<HTMLInputElement>("date-to").value;
@@ -2241,7 +2317,7 @@ declare const ASSETS: {
     layerBandSelect.value = String(loadedBand());
   });
 
-  async function search(request: { ra: number; dec: number; band: number; fov: number; from: string; to: string }, savedAsof?: string, named?: SkyShift.Target): Promise<void> {
+  async function search(request: { ra: number; dec: number; band: number; fov: number; from: string; to: string }, savedAsof?: string, named?: Named): Promise<void> {
     if (busy) return;
     closeQuickSpectrum();
     const { ra, dec, band, fov, from, to } = request;
@@ -2255,7 +2331,7 @@ declare const ASSETS: {
     searchController = new AbortController();
     interrupt = () => searchController?.abort();
     try {
-      status.textContent = `Searching SPHEREx observations${named ? ` of ${named.label}` : ""}…`;
+      status.textContent = `Searching the SPHEREx archive${named ? ` for ${named.label}` : ""}… This can take half a minute.`;
       const params = new URLSearchParams({ ra: String(ra), dec: String(dec), band: String(band), fov: String(fov) });
       const startMs = from ? Date.parse(`${from}T00:00:00Z`) : (60789 - 40587) * 86400000;
       const endMs = to ? Math.min(Date.parse(`${to}T23:59:59Z`), cutoffMs) : cutoffMs;
@@ -2267,7 +2343,7 @@ declare const ASSETS: {
       if (!response.ok) throw new Error(data.error || "Observation search failed.");
       if (!data.observations.length) throw new Error("No observations found for this selection.");
       const nextFixture = await SkyShift.makeLiveFixture(data.observations, ra, dec, fov, searchController.signal, (done, total) => {
-        status.textContent = `Downloading ${done} of ${total} observations…`;
+        status.textContent = `Downloading SPHEREx images: ${done} of ${total}…`;
       }, cacheSelect.value !== "none");
       busy = false;
       const previousFrame = frame;
@@ -2282,23 +2358,24 @@ declare const ASSETS: {
       clearCatalogues();
       get("wave-status").textContent = "";
       isBundled = false;
-      currentSelection = { ra, dec, band, fov, asof: new Date(cutoffMs).toISOString(), ...(from && to ? {from, to} : {}) };
+      currentSelection = { ra, dec, band, fov, asof: new Date(cutoffMs).toISOString(), ...(from && to ? {from, to} : {}),
+        ...(named && !named.id ? { name: named.label } : {}) };
       marker.checked = false;
-      const target = named ?? SkyShift.TARGETS.find((item) => item.ra === ra && item.dec === dec);
-      setFieldInfo(target?.label ?? `${ra.toFixed(5)}, ${dec.toFixed(5)}`, `RA ${ra.toFixed(6)}° · Dec ${dec.toFixed(6)}° · Band ${band} · ${fov}′ field`, band, target?.id);
+      const target: Named | undefined = named ?? SkyShift.TARGETS.find((item) => item.ra === ra && item.dec === dec);
+      setFieldInfo(target?.label ?? `${ra.toFixed(5)}, ${dec.toFixed(5)}`, `RA ${ra.toFixed(6)}° · Dec ${dec.toFixed(6)}° · Band ${band} · ${fov}′ field`, band, target?.id, target?.description);
       hideHere();
       frameField();
       commitView();
-      status.textContent += " · Sampled observations";
+      status.textContent = "Ready · latest archive data";
       if (data.collections.some((item: { status: string }) => item.status !== "ok")) {
-        status.textContent += " · Some archive collections were unavailable or truncated.";
+        status.textContent += " · Part of the archive did not answer, so a few images may be missing.";
       }
     } catch (error) {
       searchController?.abort();
       const message = error instanceof Error ? error.message : String(error);
       status.textContent = error instanceof DOMException && error.name === "AbortError" ? "Search cancelled. Showing the previous field."
         : error instanceof TypeError || error instanceof SyntaxError
-          ? `The archive search needs the SkyShift server (npm run dev). Still showing ${fieldName()}.`
+          ? `Searching the archive needs the SkyShift server. Still showing ${fieldName()}.`
           : `${message} Still showing ${fieldName()}.`;
     } finally {
       searchController = undefined;
@@ -2321,16 +2398,28 @@ declare const ASSETS: {
     if (!busy) toastTimer = window.setTimeout(() => toast.classList.remove("show"), status.textContent === routineStatus ? 2500 : 6000);
   }
   new MutationObserver(showToast).observe(status, { childList: true, characterData: true, subtree: true });
-  const hintKey = "skyshift.hint.blink";
+  // What to look for in each example, shown once per example until dismissed.
+  const hints: Record<string, string> = {
+    wise0855: "WISE 0855 is the coldest known brown dwarf, 7.4 light-years away. Press <b>Blink</b> to watch it move.",
+    barnard: "Barnard’s Star moves across our sky faster than any other star. Press <b>Blink</b> to watch it shift.",
+    epsindiB: "Epsilon Indi B is a pair of brown dwarfs orbiting a nearby star. Press <b>Blink</b> to see them move.",
+    rwaur: "RW Aurigae is a young star whose brightness changes. Press <b>Blink</b> to compare two visits.",
+    rdra: "R Draconis is a giant star that brightens and fades over about eight months. Press <b>Blink</b> to compare two visits.",
+  };
+  const hintKey = (id: string) => id === "wise0855" ? "skyshift.hint.blink" : `skyshift.hint.${id}`;
+  let hintFor: string | undefined;
   function maybeShowHint(): void {
-    if (embed || sharedView || !isBundled || !canCompare()) return;
-    try { if (localStorage.getItem(hintKey)) return; } catch { /* Storage can be unavailable; show the hint. */ }
+    const id = currentTargetId;
+    if (embed || sharedView || !id || !hints[id] || !canCompare() || modeSelect.value === "exposures") return;
+    try { if (localStorage.getItem(hintKey(id))) return; } catch { /* Storage can be unavailable; show the hint. */ }
+    get("hint-text").innerHTML = hints[id];
+    hintFor = id;
     hint.hidden = false;
   }
   function dismissHint(): void {
     if (hint.hidden) return;
     hint.hidden = true;
-    try { localStorage.setItem(hintKey, "1"); } catch { /* Not persisted in this browser. */ }
+    try { if (hintFor) localStorage.setItem(hintKey(hintFor), "1"); } catch { /* Not persisted in this browser. */ }
   }
   get("hint-dismiss").addEventListener("click", () => { dismissHint(); blink.focus(); });
 
@@ -2434,8 +2523,9 @@ declare const ASSETS: {
       void load().then(applyInitialCamera);
       return;
     }
-    query.value = `${ra.toFixed(5)}, ${dec.toFixed(5)}`;
-    void searchFromOptions(ra, dec, params.get("asof") ?? undefined).then(() => {
+    const sharedName = params.get("name")?.trim().slice(0, 80) || undefined;
+    query.value = sharedName ?? `${ra.toFixed(5)}, ${dec.toFixed(5)}`;
+    void searchFromOptions(ra, dec, params.get("asof") ?? undefined, sharedName ? { label: sharedName } : undefined).then(() => {
       if (currentSelection) { applyInitialCamera(); return restoreWavelength().then(restoreMark); }
       // The shared field failed to load: show the bundled example, keep the reason visible.
       const failure = status.textContent ?? "";

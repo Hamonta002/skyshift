@@ -7,6 +7,7 @@ import { handleCatalogue } from "./catalogue.mjs";
 import { handleQuality } from "./quality.mjs";
 import { handleChannels } from "./channels.mjs";
 import { handleIdentify } from "./identify.mjs";
+import { handleResolve } from "./resolve.mjs";
 
 const root = fileURLToPath(new URL("../dist/", import.meta.url));
 const port = Number(process.env.PORT ?? 4173);
@@ -35,6 +36,7 @@ const server = createServer(async (request, response) => {
       "/api/quality": () => handleQuality(url.searchParams),
       "/api/channels": () => handleChannels(),
       "/api/identify": () => handleIdentify(url.searchParams),
+      "/api/resolve": () => handleResolve(url.searchParams),
     };
     if (Object.hasOwn(routes, url.pathname)) {
       try {
