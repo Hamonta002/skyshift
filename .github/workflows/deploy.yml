@@ -6,6 +6,8 @@ name: Deploy to Azure
 on:
   push:
     branches: [main]
+    # Documentation is not part of the image, so editing it needs no redeploy.
+    paths-ignore: ["**.md"]
   workflow_dispatch:
 
 permissions:

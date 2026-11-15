@@ -1,6 +1,7 @@
 # SkyShift
 
-SkyShift is a browser-first SPHEREx explorer under development. The bundled
+SkyShift is a browser-first SPHEREx explorer under development, live at
+<https://skyshift.me>. The bundled
 WISE 0855 demonstration uses 45 real DR1 exposures in three visits. Rust compiled
 to WebAssembly aligns and stacks the images in a worker; a TypeScript engine is
 available for comparison.
@@ -119,17 +120,22 @@ default is `127.0.0.1:4173` for local use. The browser reads image pixels
 directly from the public SPHEREx S3 bucket, which allows cross-origin range
 requests.
 
-The public site runs on Azure Container Apps (Japan East):
-<https://skyshift.yellowsea-43436967.japaneast.azurecontainerapps.io/>.
-Every push to `main` deploys itself through `.github/workflows/deploy.yml`:
-GitHub runs `npm test`, builds the image, pushes it to the `ca361b59b371acr`
-registry and points the `skyshift` app at it. GitHub signs in to Azure with
-OpenID Connect as the `skyshift-github` managed identity, which trusts only
-`main` of this repository and can only manage the `skyshift` resource group;
-the repository secrets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and
-`AZURE_SUBSCRIPTION_ID` hold its IDs. A failed test or build leaves the site
-as it was. To deploy again without a change, run the workflow from the
-Actions tab.
+The public site is <https://skyshift.me> (also `www.skyshift.me`), on Azure
+Container Apps in Central India. Every push to `main` that changes more than
+Markdown files deploys itself through `.github/workflows/deploy.yml`: GitHub
+runs `npm test`, builds the image, pushes it to the registry named by the
+`AZURE_REGISTRY` repository variable (`skyshiftda41736d`) and points the
+`skyshift` app at it. GitHub signs in to Azure with OpenID Connect as the
+`skyshift-github` managed identity, which trusts only `main` of this
+repository and can only manage the `skyshift` resource group; the repository
+secrets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID` hold
+its IDs. A failed test or build leaves the site as it was. To deploy again
+without a change, run the workflow from the Actions tab.
+
+The domain is registered at Namecheap. Its DNS has an A record for `@` that
+points at the Container Apps environment, a CNAME for `www` to the app's
+`azurecontainerapps.io` address, and `asuid` and `asuid.www` TXT records that
+prove ownership to Azure. Azure issues and renews both HTTPS certificates.
 
 To run a copy on your own subscription (for example from a fork), open Azure
 Cloud Shell (Bash), clone the repository and run `bash deploy/azure-setup.sh`
@@ -142,13 +148,13 @@ free, auto-renewing HTTPS certificates.
 
 The image is built on GitHub because Azure for Students subscriptions cannot
 run ACR Tasks, so `az containerapp up --source .` fails there with
-`TasksOperationsNotAllowed`. The app scales to zero when idle; during judging,
-keep one copy running so the first visitor does not wait for it to start:
+`TasksOperationsNotAllowed`. The app can keep one copy running, so visitors
+never wait but it is billed around the clock, or sleep when idle, the
+cheapest option, where the first visitor waits a few seconds while it starts:
 
 ```sh
-az containerapp update --name skyshift --resource-group skyshift --min-replicas 1
-# Afterwards, back to zero cost when idle:
-az containerapp update --name skyshift --resource-group skyshift --min-replicas 0
+az containerapp update --name skyshift --resource-group skyshift --min-replicas 1   # always on
+az containerapp update --name skyshift --resource-group skyshift --min-replicas 0   # sleep when idle
 ```
 
 On Azure App Service (Web App for Containers), set the app setting
