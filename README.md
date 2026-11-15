@@ -7,9 +7,10 @@ available for comparison.
 
 ## Run locally
 
-Requirements: Node.js, Rust, and either the `wasm32-unknown-unknown` Rust target
-or Clang with WebAssembly support. Install the dependencies, build, and start
-the local web server:
+Requirements: Node.js, and optionally Rust with the `wasm32-unknown-unknown` target
+(or Clang with WebAssembly support) for the WebAssembly kernel; if the Rust/Clang
+toolchain is unavailable, `npm run build` falls back to building the TypeScript-only
+bundle without `kernel.wasm`. Install the dependencies, build, and start the local web server:
 
 ```sh
 npm install
@@ -23,19 +24,7 @@ The browser also needs direct cross-origin range access to the public SPHEREx
 S3 bucket for image pixels. Deploying this application publicly requires a host
 that runs the search route and verification of cross-origin access.
 
-The viewer is a full-screen sky map. It opens on WISE 0855 at 8 screen pixels per image pixel. Drag to pan, and scroll or pinch to zoom. Click any point for its coordinates and pixel value, and press `?` for keyboard shortcuts. Moving the map never replaces the loaded data; use **Search this area** to load a new field. The search box takes an example name, or RA and Dec. It accepts decimal degrees or complete sexagesimal RA and declination,
-with the detector band, field of view and dates under search options. The example chips open a bundled example
-directly; an example that is not bundled in the build is fetched through the live search. Only WISE 0855 is
-bundled offline. The live path queries IRSA for observations,
-downloads a bounded sample, and computes visit stacks locally. It includes
-individual exposures, visual sum/difference, centre-wavelength filtering, a preliminary
-spectrum, shareable coordinates, and JSON metadata export. Nominal channel centres
-can be loaded from IRSA on demand; adjacent midpoints are only approximate boundaries. Optional Gaia DR3 and
-CatWISE2020 catalogue overlays use read-only server queries. A flag decoder accepts
-a numeric value supplied by the user. The optional flag inspector can also read a
-3 × 3 FLAGS cutout for the first exposure in the current frame. It requires Astropy
-on the server: `python -m pip install astropy`. It uses bounded byte ranges and
-does not represent the quality of the entire stack. Add `embed=1` to the URL for compact display.
+The viewer is a full-screen sky map. It opens on WISE 0855 at 8 screen pixels per image pixel. Drag or use the arrow keys to pan, and scroll or pinch to zoom. As you pan away from the loaded stack, an on-screen map locator (`Inside field` / offset readout) and a highlighted target viewport reticle track where the view centre is focused relative to the loaded field; moving the map never replaces the loaded data until you trigger **Search this area** (or press `0` / **Back to field** to return). Click any point for its coordinates, pixel value, and quick actions, and press `?` for keyboard shortcuts. The search box takes an example name, or RA and Dec. It accepts decimal degrees or complete sexagesimal RA and declination, with the detector band, field of view and dates under search options. The example chips open a bundled example directly; an example that is not bundled in the build is fetched through the live search. Only WISE 0855 is bundled offline. The live path queries IRSA for observations, downloads a bounded sample, and computes visit stacks locally. It includes individual exposures, visual sum/difference, centre-wavelength filtering, a preliminary spectrum, comparison star differential analysis, shareable coordinates, and JSON metadata export. Nominal channel centres can be loaded from IRSA on demand; adjacent midpoints are only approximate boundaries. Optional Gaia DR3 and CatWISE2020 catalogue overlays use read-only server queries. A flag decoder accepts a numeric value supplied by the user. The optional flag inspector can also read a 3 × 3 FLAGS cutout for the first exposure in the current frame (or at comparison apertures). It requires Astropy on the server: `python -m pip install astropy`. It uses bounded byte ranges and does not represent the quality of the entire stack. Add `embed=1` to the URL for compact display.
 
 Observation searches are cached in server memory. Inputs and results are cached
 in the browser where IndexedDB is available; the browser can continue without a
@@ -46,8 +35,10 @@ adding their collection names; this does not change the numerical kernel.
 ## Discover and identify
 
 - **Find movers** (or `F`) looks for the signature of a moving source in B − A:
-  a fading spot next to a brightening one. You can then step through the
-  candidates. Sources that only changed brightness are listed separately.
+  a fading spot next to a brightening one, and populates the **Movers & changes**
+  panel with `All`, `Moved`, and `Brightness` filters. Detected candidates are
+  matched against proper-motion-propagated catalogue names when available, and
+  you can step through them directly on the map.
 - **Track & identify** (click a source, or `T`) measures the source's position
   and brightness in every visit, fits its motion in arcsec per year, and draws
   its path. It then checks SIMBAD (with the Harvard mirror as a fallback), Gaia
@@ -57,6 +48,15 @@ adding their collection names; this does not change the numerical kernel.
   candidate", lists what it was based on. Verdicts are rules of thumb, so
   confirm them with Blink. Saturated cores are located from their masked
   pixels, and their brightness is a lower limit.
+- **Comparison star** (field panel -> **Comparison star**, or **Set target** /
+  **Set reference** on the sky-position card) compares a target star against a
+  reference star chosen from the sky map or Gaia DR3 / CatWISE2020 overlays.
+  It uses proper-motion-aware aperture photometry (falling back to 3–6 px ring
+  estimates on saturated cores), excludes unmatched wavelengths, computes
+  target/reference flux ratios and differential variation (Δmag) across visits
+  and matched wavelength bins, flags unsuitable or contaminated references
+  (including optional server-side SPHEREx FLAGS checks), plots a three-panel
+  comparison chart, and exports results as CSV.
 - **Reports**: *Copy report link* reopens the view with the object tracked
   (`mark=ra,dec`). *Download report* saves the positions, motion, brightness
   and catalogue matches as JSON.
@@ -107,11 +107,14 @@ npm test
 npm run bench
 ```
 
-`npm test` includes simulated cache checks and synthetic FITS/VOTable and
-coordinate checks. `npm run bench` compares Rust/WASM and TypeScript on the
-pinned real fixture and on synthetic workloads. Fixture inputs and source
-metadata are in `reference/fixtures/`. See `SPHEREx_Implementation_Plan.md`
-for the full acceptance criteria.
+`npm test` runs the full suite (`build`, `check-cache`, `check-archive`,
+`check-features`, `check-map`, `check-track`, `check-identify`,
+`check-comparison`, and `check-flag-reader`), including simulated cache checks,
+synthetic FITS/VOTable and coordinate checks, and differential photometry checks
+validated against `reference/measure_frames.py` (without `dist/kernel.wasm`,
+the WASM engine-switch cache step is skipped). `npm run bench` compares
+Rust/WASM and TypeScript on the pinned real fixture and on synthetic workloads.
+Fixture inputs and source metadata are in `reference/fixtures/`.
 
 **This is not yet a release-ready implementation.** Verified on 2026-11-14 in
 headless Chromium: the live IRSA search, S3 range reads and alignment for all five
