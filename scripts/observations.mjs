@@ -1,8 +1,10 @@
 import { readFileSync } from "node:fs";
+import { discoveredCollections } from "./releases.mjs";
 const config = JSON.parse(readFileSync(new URL("../config/archive.json", import.meta.url), "utf8"));
 const { collections: COLLECTIONS, bandsMicron: BANDS, siaEndpoint: ARCHIVE, productPrefix: PREFIX } = config;
 const MAX_ROWS = 500;
-const releases = new Set(COLLECTIONS.map((name) => name.replace(/^spherex_/, "").replace(/_deep$/, "")));
+const releaseOf = (name) => name.replace(/^spherex_/, "").replace(/_deep$/, "");
+const releases = new Set(COLLECTIONS.map(releaseOf));
 const cache = new Map();
 const inflight = new Map();
 
@@ -16,7 +18,7 @@ function xmlText(value) {
   }).trim();
 }
 
-export function parseVOTable(xml) {
+export function parseVOTable(xml, known = releases) {
   if (!/<VOTABLE[\s>]/i.test(xml)) throw new Error("Archive returned an invalid VOTable.");
   const infos = [...xml.matchAll(/<INFO\b([^>]*)>/gi)].map((entry) => entry[1]);
   const status = (value) => infos.some((attrs) => /\bname\s*=\s*["']QUERY_STATUS["']/i.test(attrs)
@@ -38,7 +40,7 @@ export function parseVOTable(xml) {
     if (!data.access_url.startsWith(PREFIX)) continue;
     const productKey = data.access_url.slice(PREFIX.length);
     if (!/^[a-z0-9_]+\/level2\/[a-zA-Z0-9_./-]+\.fits$/.test(productKey)
-      || !releases.has(productKey.split("/")[0]) || productKey.includes("..")) continue;
+      || !known.has(productKey.split("/")[0]) || productKey.includes("..")) continue;
     const detector = Number(data.energy_bandpassname.match(/D([1-6])$/)?.[1]);
     const startMjd = Number(data.t_min);
     const endMjd = Number(data.t_max);
@@ -74,7 +76,8 @@ async function readBoundedText(response, maxBytes) {
   } finally { await reader.cancel().catch(() => {}); }
 }
 
-export async function searchObservations(params, fetcher = fetch) {
+/** `discovered` lists collections of releases found in the bucket but not yet configured. */
+export async function searchObservations(params, fetcher = fetch, discovered = []) {
   const number = (key) => {
     const raw = params.get(key);
     if (raw === null || raw.trim() === "") throw new Error(`Missing ${key}.`);
@@ -91,7 +94,9 @@ export async function searchObservations(params, fetcher = fetch) {
   const from = params.has("fromMjd") ? number("fromMjd") : 60789;
   const to = params.has("toMjd") ? number("toMjd") : now;
   if (from > to || to > now + 1 || from < 60000) throw new Error("Invalid time bounds.");
-  const requests = COLLECTIONS.map(async (name) => {
+  const names = [...COLLECTIONS, ...discovered.filter((name) => !COLLECTIONS.includes(name))];
+  const known = new Set(names.map(releaseOf));
+  const requests = names.map(async (name) => {
     const start = name.endsWith("_deep") ? Math.max(from, to - 90) : from;
     const query = new URLSearchParams({
       COLLECTION: name, POS: `CIRCLE ${ra} ${dec} ${fov / 120}`,
@@ -102,15 +107,15 @@ export async function searchObservations(params, fetcher = fetch) {
       const response = await fetcher(`${ARCHIVE}?${query}`, { signal: AbortSignal.timeout(10000) });
       if (!response.ok) throw new Error(`Archive returned HTTP ${response.status}.`);
       const body = await readBoundedText(response, 10_000_000);
-      const parsed = parseVOTable(body);
+      const parsed = parseVOTable(body, known);
       return { name, status: parsed.truncated ? "truncated" : "ok", fromMjd: start, toMjd: to, ...parsed };
     } catch {
       return { name, status: "unavailable", fromMjd: start, toMjd: to, observations: [] };
     }
   });
   const collections = await Promise.all(requests);
-  if (collections.every((collection) => collection.status === "unavailable")) {
-    const error = new Error("All archive collections are unavailable.");
+  if (collections.filter((collection) => !discovered.includes(collection.name)).every((collection) => collection.status === "unavailable")) {
+    const error = new Error("The SPHEREx archive is not answering right now. Try again in a few minutes.");
     error.status = 502;
     throw error;
   }
@@ -121,18 +126,19 @@ export async function searchObservations(params, fetcher = fetch) {
   return {
     checkedAtUtc: new Date().toISOString(),
     observations: [...unique.values()].sort((a, b) => a.startMjd - b.startMjd || a.productKey.localeCompare(b.productKey)),
-    collections: collections.map(({ name, status, fromMjd, toMjd }) => ({ name, status, fromMjd, toMjd })),
+    collections: collections.map(({ name, status, fromMjd, toMjd }) => ({ name, status, fromMjd, toMjd, ...(discovered.includes(name) ? { discovered: true } : {}) })),
   };
 }
 
 export async function handleObservations(params) {
-  const key = params.toString();
+  const discovered = await discoveredCollections(COLLECTIONS);
+  const key = `${params}|${discovered.join(",")}`;
   const now = Date.now();
   const saved = cache.get(key);
   if (saved && saved.expires > now) return saved.value;
   if (inflight.has(key)) return inflight.get(key);
-  const pending = searchObservations(params).then((value) => {
-    if (value.collections.every((item) => item.status === "ok")) {
+  const pending = searchObservations(params, fetch, discovered).then((value) => {
+    if (value.collections.every((item) => item.status === "ok" || item.discovered)) {
       cache.set(key, { value, expires: now + (value.observations.length ? 3600000 : 300000) });
       if (cache.size > 128) cache.delete(cache.keys().next().value);
     }
