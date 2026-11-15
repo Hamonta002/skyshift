@@ -15,7 +15,7 @@ namespace SkyShift {
   const cropInflight = new Map<string, Promise<{ header: ExposureHeader; pixels: Float32Array }>>();
   interface WaveGrid { nx: number; ny: number; xs: number[]; ys: number[]; values: Float32Array; }
   const waveCache = new Map<string, WaveGrid>();
-  const waveInflight = new Map<string, Promise<WaveGrid>>();
+  const waveInflight = new Map<string, { signal: AbortSignal; promise: Promise<WaveGrid> }>();
   const cropStore = new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open("skyshift-crops", 1);
     request.onupgradeneeded = () => request.result.createObjectStore("crops", { keyPath: "key" });
@@ -387,32 +387,34 @@ namespace SkyShift {
     const key = waveCacheKey(productKey);
     const cached = waveCache.get(key);
     if (cached) return cached;
-    let pending = waveInflight.get(key);
-    if (!pending) {
-      pending = (async () => {
-        const response = await fetchRangeResponse(productKey, "bytes=-5760", signal);
-        if (response.status !== 206) throw new Error("Wavelength lookup could not be downloaded.");
-        const bytes = new Uint8Array(await response.arrayBuffer());
-        if (bytes.length !== 5760) throw new Error("Unexpected wavelength lookup size.");
-        const table = fitsHeader(bytes, 0);
-        if (table.values.EXTNAME !== "WCS-WAVE") throw new Error("Unsupported wavelength lookup layout.");
-        const nx = parseInt(String(table.values.TFORM1), 10), ny = parseInt(String(table.values.TFORM2), 10);
-        if (!(nx >= 2 && ny >= 2 && 4 * (nx + ny) + 8 * nx * ny <= bytes.length - table.end)) {
-          throw new Error("Invalid wavelength lookup dimensions.");
-        }
-        const data = new DataView(bytes.buffer, bytes.byteOffset + table.end);
-        const xs = Array.from({ length: nx }, (_, i) => data.getInt32(i * 4, false));
-        const ys = Array.from({ length: ny }, (_, i) => data.getInt32((nx + i) * 4, false));
-        const base = 4 * (nx + ny);
-        const values = new Float32Array(2 * nx * ny);
-        for (let i = 0; i < values.length; i++) values[i] = data.getFloat32(base + i * 4, false);
-        const grid: WaveGrid = { nx, ny, xs, ys, values };
-        waveCache.set(key, grid);
-        return grid;
-      })().finally(() => waveInflight.delete(key));
-      waveInflight.set(key, pending);
-    }
-    return pending;
+    const pending = waveInflight.get(key);
+    if (pending?.signal === signal) return pending.promise;
+    const promise = (async () => {
+      const response = await fetchRangeResponse(productKey, "bytes=-5760", signal);
+      if (response.status !== 206) throw new Error("Wavelength lookup could not be downloaded.");
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.length !== 5760) throw new Error("Unexpected wavelength lookup size.");
+      const table = fitsHeader(bytes, 0);
+      if (table.values.EXTNAME !== "WCS-WAVE") throw new Error("Unsupported wavelength lookup layout.");
+      const nx = parseInt(String(table.values.TFORM1), 10), ny = parseInt(String(table.values.TFORM2), 10);
+      if (!(nx >= 2 && ny >= 2 && 4 * (nx + ny) + 8 * nx * ny <= bytes.length - table.end)) {
+        throw new Error("Invalid wavelength lookup dimensions.");
+      }
+      const data = new DataView(bytes.buffer, bytes.byteOffset + table.end);
+      const xs = Array.from({ length: nx }, (_, i) => data.getInt32(i * 4, false));
+      const ys = Array.from({ length: ny }, (_, i) => data.getInt32((nx + i) * 4, false));
+      const base = 4 * (nx + ny);
+      const values = new Float32Array(2 * nx * ny);
+      for (let i = 0; i < values.length; i++) values[i] = data.getFloat32(base + i * 4, false);
+      return { nx, ny, xs, ys, values };
+    })().then((grid) => {
+      if (waveInflight.get(key)?.promise === promise) waveCache.set(key, grid);
+      return grid;
+    }).finally(() => {
+      if (waveInflight.get(key)?.promise === promise) waveInflight.delete(key);
+    });
+    waveInflight.set(key, { signal, promise });
+    return promise;
   }
 
   export async function fetchWavelength(header: ExposureHeader, x: number, y: number, signal: AbortSignal): Promise<[number, number]> {

@@ -241,7 +241,13 @@ function packSyntheticFixture(id, ra0, dec0, dates, visitSizes, exposures) {
   assert.ok(wiseSeries.every((m) => m.status === 'measured' && Number.isFinite(m.flux) && m.error > 0));
   assert.ok(wiseSeries.filter((m) => m.flux > 0).length >= 40);
 
-  const rdraFix = require('../reference/fixtures/examples/rdra.json').fixture;
+  const rdraFix = structuredClone(require('../reference/fixtures/examples/rdra.json').fixture);
+  // R Dra has real pixels but no bundled wavelength metadata. This check
+  // compares the aperture measurements, which do not depend on wavelength.
+  for (const header of rdraFix.headers) {
+    header.wavelength = 4.1;
+    header.bandwidth = 0.04;
+  }
   const rdraTarget = sky.resolveSpectrumTarget(rdraFix, 'rdra', null, null);
   const rdraSeries = await sky.measureStarSeries(rdraFix, rdraTarget, new AbortController().signal);
   assert.ok(rdraSeries.some((m) => m.status === 'estimate'), 'R Dra contains saturated wing estimates');
@@ -249,42 +255,41 @@ function packSyntheticFixture(id, ra0, dec0, dates, visitSizes, exposures) {
   // Run reference Python photometry equations directly on decoded pixels of exposure 0 (WISE 0855) & exposure 0 (R Dra)
   const pyCode = `
 import base64, json, math, sys
-import numpy as np
+import struct
+from statistics import median
 
 OMEGA_SR = 37.86 * (math.pi / 648000.0) ** 2
 
-def mad(a):
-    a = np.asarray(a, float)
-    return 1.4826 * np.median(np.abs(a - np.median(a)))
+def measure_py(pixels, size, cx, cy):
+    samples = [(i % size, i // size, value) for i, value in enumerate(pixels)]
 
-def measure_py(img, cx, cy):
-    h, w = img.shape
-    yy, xx = np.mgrid[0:h, 0:w]
-    rad = np.hypot(xx - cx, yy - cy)
-    sky = img[(rad > 8) & (rad < 14) & np.isfinite(img)]
-    bg, sig = float(np.median(sky)), float(mad(sky))
-    sig = max(sig, 1e-9)
-    sub = img - bg
-    nan_core = int(np.sum(~np.isfinite(img[rad <= 2.5])))
-    if nan_core == 0:
+    def at(x, y, inner, outer):
+        return [(sx, sy, value) for sx, sy, value in samples if inner < math.hypot(sx - x, sy - y) <= outer]
+
+    sky = [value for x, y, value in samples if 8 < math.hypot(x - cx, y - cy) < 14 and math.isfinite(value)]
+    bg = median(sky)
+    sig = max(1.4826 * median(abs(value - bg) for value in sky), 1e-9)
+    core = at(cx, cy, -1, 2.5)
+    if all(math.isfinite(v) for _, _, v in core):
         mx, my = cx, cy
         for _ in range(8):
-            m = (np.hypot(xx - mx, yy - my) <= 2.5) & np.isfinite(sub)
-            wgt = np.clip(sub[m], 0, None)
-            if wgt.sum() <= 0:
+            weights = [(x, y, v - bg) for x, y, v in at(mx, my, -1, 2.5) if math.isfinite(v) and v > bg]
+            total_weight = sum(w for _, _, w in weights)
+            if total_weight <= 0:
                 break
-            mx, my = float((xx[m] * wgt).sum() / wgt.sum()), float((yy[m] * wgt).sum() / wgt.sum())
-        aper = (np.hypot(xx - mx, yy - my) <= 2.5) & np.isfinite(sub)
-        return dict(mode="measured", flux=float(sub[aper].sum() * 1e6 * OMEGA_SR), err=float(sig * math.sqrt(aper.sum()) * 1e6 * OMEGA_SR))
-    wing_mask = (rad > 3) & (rad <= 6)
-    wing_ok = wing_mask & np.isfinite(img)
-    return dict(mode="estimate", flux=float(np.mean(sub[wing_ok]) * wing_mask.sum() * 1e6 * OMEGA_SR), err=float(sig * math.sqrt(wing_mask.sum()) * 1e6 * OMEGA_SR))
+            mx = sum(x * w for x, _, w in weights) / total_weight
+            my = sum(y * w for _, y, w in weights) / total_weight
+        values = [v - bg for _, _, v in at(mx, my, -1, 2.5) if math.isfinite(v)]
+        return dict(mode="measured", flux=sum(values) * 1e6 * OMEGA_SR, err=sig * math.sqrt(len(values)) * 1e6 * OMEGA_SR)
+    wing = at(cx, cy, 3, 6)
+    values = [v - bg for _, _, v in wing if math.isfinite(v)]
+    return dict(mode="estimate", flux=sum(values) / len(values) * len(wing) * 1e6 * OMEGA_SR, err=sig * math.sqrt(len(wing)) * 1e6 * OMEGA_SR)
 
 payload = json.loads(sys.stdin.read())
 out = []
 for item in payload:
-    raw = np.frombuffer(base64.b64decode(item["pixels"]), dtype="<f4").reshape(item["size"], item["size"]).astype(float)
-    out.append(measure_py(raw, item["cx"], item["cy"]))
+    raw = struct.unpack(f'<{item["size"] ** 2}f', base64.b64decode(item["pixels"]))
+    out.append(measure_py(raw, item["size"], item["cx"], item["cy"]))
 print(json.dumps(out))
 `;
   const wiseDecoded = sky.decodeFixture(fixture);

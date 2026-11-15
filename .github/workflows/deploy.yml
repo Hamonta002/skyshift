@@ -1,0 +1,59 @@
+# Tests every push to main, then builds the image on GitHub and deploys it to
+# the Azure Container App. GitHub signs in to Azure with OpenID Connect through
+# the skyshift-github managed identity, so no password is stored.
+name: Deploy to Azure
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-azure
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ca361b59b371acr
+  APP: skyshift
+  RESOURCE_GROUP: skyshift
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: rustup target add wasm32-unknown-unknown
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Build and push the image
+        run: |
+          IMAGE="$REGISTRY.azurecr.io/skyshift:${GITHUB_SHA::7}"
+          az acr login --name "$REGISTRY"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+      - name: Deploy the new image
+        run: |
+          az extension add --name containerapp --upgrade --allow-preview true --only-show-errors
+          az containerapp update --name "$APP" --resource-group "$RESOURCE_GROUP" --image "$IMAGE" --only-show-errors
+          echo "Live at https://$(az containerapp show --name "$APP" --resource-group "$RESOURCE_GROUP" --query properties.configuration.ingress.fqdn -o tsv)"

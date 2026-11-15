@@ -8,7 +8,7 @@ namespace SkyShift {
   // same quick-look photometry (measureApertureAt). Their ratio cancels effects
   // common to both stars in one exposure (calibration drifts, throughput), so a
   // change in the ratio between visits points to the target (or the reference)
-  // really changing. See docs/FEATURE_COMPARISON_STAR.md for the assumptions.
+  // really changing.
 
   export type StarMeasurementStatus =
     | "measured"      // clean 2.5 px aperture
@@ -409,4 +409,3 @@ namespace SkyShift {
     return { mode, pairs, visits, bins, assessment, usablePairs: usable.length, chi2, dof, amplitudeMag, verdict, verdictText, assumptions };
   }
 }
-

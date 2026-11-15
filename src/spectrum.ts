@@ -42,6 +42,7 @@ namespace SkyShift {
     wavelength: number;
     bandwidth: number;
     flux: number;
+    surfaceBrightness: number;
     error: number;
     visit: number;
     date: string;
@@ -49,6 +50,7 @@ namespace SkyShift {
     productKey: string | null;
     saturated: boolean;
     mode: "aperture" | "ring";
+    wavelengthAtReferencePosition: boolean;
   }
 
   export interface SpectrumTarget {
@@ -103,11 +105,11 @@ namespace SkyShift {
         gaia: { matches: { pmra: number | null; pmdec: number | null }[] };
       } | null;
     } | null,
-    selected?: { ra: number; dec: number; label?: string; pmra?: number; pmdec?: number; epoch?: number } | null,
+    selected?: SpectrumTarget | null,
   ): SpectrumTarget {
     if (tracked && tracked.points.length) {
       const at = tracked.points.find((p) => p.frame === tracked.start.frame) ?? tracked.points[0];
-      const known = findTargetAt(at.ra, at.dec, 0.005);
+      const known = findTargetAt(at.ra, at.dec, 8 / 3600, at.mjd ?? undefined);
       if (known) return known;
       const gaia = tracked.id?.gaia.matches[0];
       const simbad = tracked.id?.simbad.matches[0];
@@ -124,15 +126,9 @@ namespace SkyShift {
       };
     }
     if (selected) {
-      const known = findTargetAt(selected.ra, selected.dec, 0.005);
-      if (known) return known;
       return {
+        ...selected,
         label: selected.label ?? `${selected.ra.toFixed(5)}°, ${selected.dec.toFixed(5)}°`,
-        ra: selected.ra,
-        dec: selected.dec,
-        pmra: selected.pmra,
-        pmdec: selected.pmdec,
-        epoch: selected.epoch,
       };
     }
     const named = (currentTargetId ? TARGETS.find((item) => item.id === currentTargetId) : undefined)
@@ -150,6 +146,7 @@ namespace SkyShift {
     /** Flux in Jy, or null when no valid measurement exists (never 0 as a placeholder). */
     flux: number | null;
     error: number | null;
+    surfaceBrightness: number | null;
     /** Crop-pixel position used (refined centroid when adopted). */
     x: number;
     y: number;
@@ -169,11 +166,12 @@ namespace SkyShift {
   export function measureApertureAt(pixels: Float32Array, size: number, cx: number, cy: number): ApertureMeasurement {
     const solidAngle = SPHEREX_PIXEL_SR;
     const empty = (status: ApertureMeasurement["status"], nanCore = 0, skyPixels = 0): ApertureMeasurement =>
-      ({ status, flux: null, error: null, x: cx, y: cy, snr: null, nanCore, skyPixels });
-    if (cx < 4 || cy < 4 || cx >= size - 4 || cy >= size - 4) return empty("edge");
+      ({ status, flux: null, error: null, surfaceBrightness: null, x: cx, y: cy, snr: null, nanCore, skyPixels });
+    if (!(cx >= 4 && cy >= 4 && cx < size - 4 && cy < size - 4)) return empty("edge");
     const sky: number[] = [];
     let nanCore = 0;
-    for (let py = 0; py < size; py++) for (let px = 0; px < size; px++) {
+    for (let py = Math.max(0, Math.ceil(cy - 14)); py < size && py < cy + 14; py++)
+      for (let px = Math.max(0, Math.ceil(cx - 14)); px < size && px < cx + 14; px++) {
       const radius = Math.hypot(px - cx, py - cy);
       const value = pixels[py * size + px];
       if (radius <= 2.5 && !Number.isFinite(value)) nanCore++;
@@ -186,7 +184,8 @@ namespace SkyShift {
       let tx = cx, ty = cy;
       for (let iter = 0; iter < 8; iter++) {
         let wSum = 0, wx = 0, wy = 0;
-        for (let py = 0; py < size; py++) for (let px = 0; px < size; px++) {
+        for (let py = Math.max(0, Math.ceil(ty - 2.5)); py < size && py <= ty + 2.5; py++)
+          for (let px = Math.max(0, Math.ceil(tx - 2.5)); px < size && px <= tx + 2.5; px++) {
           if (Math.hypot(px - tx, py - ty) <= 2.5) {
             const value = pixels[py * size + px];
             if (Number.isFinite(value) && value - background > 0) {
@@ -201,7 +200,8 @@ namespace SkyShift {
       const evalAperture = (ax: number, ay: number) => {
         const vals: number[] = [];
         let hasNan = false;
-        for (let py = 0; py < size; py++) for (let px = 0; px < size; px++) {
+        for (let py = Math.max(0, Math.ceil(ay - 2.5)); py < size && py <= ay + 2.5; py++)
+          for (let px = Math.max(0, Math.ceil(ax - 2.5)); px < size && px <= ax + 2.5; px++) {
           if (Math.hypot(px - ax, py - ay) <= 2.5) {
             const value = pixels[py * size + px];
             if (!Number.isFinite(value)) hasNan = true;
@@ -220,6 +220,7 @@ namespace SkyShift {
           status: "aperture",
           flux: chosen.sum * solidAngle * 1e6,
           error: mad * Math.sqrt(chosen.vals.length) * solidAngle * 1e6,
+          surfaceBrightness: chosen.sum / chosen.vals.length,
           x: chosen.x, y: chosen.y, snr: chosen.snr, nanCore: 0, skyPixels: sky.length,
         };
       }
@@ -227,7 +228,8 @@ namespace SkyShift {
     }
     // Saturated/blanked core fallback: 3-6 px PSF wing annulus (matching reference/measure_frames.py --wing).
     let wingTotal = 0, wingValid = 0, wingSum = 0;
-    for (let py = 0; py < size; py++) for (let px = 0; px < size; px++) {
+    for (let py = Math.max(0, Math.ceil(cy - 6)); py < size && py <= cy + 6; py++)
+      for (let px = Math.max(0, Math.ceil(cx - 6)); px < size && px <= cx + 6; px++) {
       const radius = Math.hypot(px - cx, py - cy);
       if (radius > 3 && radius <= 6) {
         wingTotal++;
@@ -238,7 +240,7 @@ namespace SkyShift {
     if (wingTotal < 10 || wingValid <= 0.7 * wingTotal) return empty("blank-core", nanCore, sky.length);
     const flux = (wingSum / wingValid) * wingTotal * solidAngle * 1e6;
     const error = mad * Math.sqrt(wingTotal) * solidAngle * 1e6;
-    return { status: "ring", flux, error, x: cx, y: cy, snr: flux / error, nanCore, skyPixels: sky.length };
+    return { status: "ring", flux, error, surfaceBrightness: wingSum / wingValid, x: cx, y: cy, snr: flux / error, nanCore, skyPixels: sky.length };
   }
 
   /** Aperture centre for one exposure, propagated with proper motion when available. */
@@ -250,35 +252,41 @@ namespace SkyShift {
     }, mjd);
   }
 
-  export async function quickSpectrum(fixture: PackedFixture, signal: AbortSignal, target?: SpectrumTarget): Promise<SpectrumPoint[]> {
+  type SpectrumPositionForExposure = (visit: number, exposure: number) => SpectrumTarget | undefined;
+  export async function quickSpectrum(
+    fixture: PackedFixture, signal: AbortSignal, target?: SpectrumTarget | SpectrumPositionForExposure,
+  ): Promise<SpectrumPoint[]> {
     const exposures = decodeFixture(fixture);
     const result: SpectrumPoint[] = [];
-    const astrometry: SpectrumTarget | undefined = target ?? findTargetAt(fixture.ra0, fixture.dec0);
+    const defaultPosition = findTargetAt(fixture.ra0, fixture.dec0) ?? { ra: fixture.ra0, dec: fixture.dec0 };
     let index = 0;
     for (let visit = 0; visit < fixture.visitSizes.length; visit++) {
       for (let i = 0; i < fixture.visitSizes[visit]; i++, index++) {
         if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
         const exposure = exposures[index], h = exposure.header;
-        const base: SpectrumTarget = { ...(astrometry ?? {}), ra: target?.ra ?? fixture.ra0, dec: target?.dec ?? fixture.dec0 };
-        const [ra, dec] = astrometry ? exposureSkyPosition(base, h.mjd) : [base.ra, base.dec];
+        const position = typeof target === "function" ? target(visit, index) : (target ?? defaultPosition);
+        if (!position) continue;
+        const [ra, dec] = exposureSkyPosition(position, h.mjd);
         const [x, y] = worldToPixel(exposure.wcs, ra, dec);
         const m = measureApertureAt(exposure.pixels, h.size, x - h.x0, y - h.y0);
-        if ((m.status !== "aperture" && m.status !== "ring") || m.flux === null || m.error === null) continue;
+        if (m.flux === null || m.error === null || m.surfaceBrightness === null) continue;
         let wavelength: number, bandwidth: number;
         try { [wavelength, bandwidth] = await fetchWavelength(h, m.x + h.x0, m.y + h.y0, signal); }
         catch (err) { if (signal.aborted) throw err; continue; }
-        if (!Number.isFinite(wavelength)) continue;
+        if (!Number.isFinite(wavelength) || !Number.isFinite(bandwidth) || bandwidth <= 0) continue;
         result.push({
           wavelength,
           bandwidth,
           flux: m.flux,
           error: m.error,
+          surfaceBrightness: m.surfaceBrightness,
           visit,
           date: fixture.dates[visit] ?? `Visit ${visit + 1}`,
           mjd: h.mjd ?? null,
           productKey: h.productKey ?? null,
           saturated: m.status === "ring",
           mode: m.status === "ring" ? "ring" : "aperture",
+          wavelengthAtReferencePosition: h.wavelength !== undefined && h.bandwidth !== undefined,
         });
       }
     }

@@ -12,6 +12,7 @@ const checks = [
   { name: "check-map", cmd: process.execPath, args: ["scripts/check-map.mjs"] },
   { name: "check-track", cmd: process.execPath, args: ["scripts/check-track.mjs"] },
   { name: "check-identify", cmd: process.execPath, args: ["scripts/check-identify.mjs"] },
+  { name: "check-resolve", cmd: process.execPath, args: ["scripts/check-resolve.mjs"] },
   { name: "check-comparison", cmd: process.execPath, args: ["scripts/check-comparison.mjs"] },
   { name: "check-flag-reader", cmd: resolvePython(), args: ["scripts/check-flag-reader.py"] },
 ];

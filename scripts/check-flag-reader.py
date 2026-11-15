@@ -123,4 +123,10 @@ rice_const = struct.pack('>I', 1 << 21) + bytes([0x00])
 decoded_rice = mod._decode_rice_32(rice_const, 8, blocksize=32)
 assert decoded_rice == [1 << 21] * 8
 
+# CFITSIO's direct-coded block for eight values with large pixel differences.
+rice_direct = bytes.fromhex('00000000d000000003fffffff3ffffffeffffffff80000000fffffffe80200000002000008')
+assert mod._decode_rice_32(rice_direct, 8, blocksize=8) == [
+    0, 1073741823, 0, 2147483648, 2147483647, 0, 2097152, 4294967295,
+]
+
 print('Bounded FITS range file checks passed (mock archive).')

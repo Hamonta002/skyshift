@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { parseVOTable, searchObservations } from './observations.mjs';
+import { discoverReleases, discoveredCollections, listedPrefixes, newerReleases, resetDiscovery } from './releases.mjs';
 
 const require = createRequire(import.meta.url);
 const sky = require('../dist/archive.cjs');
@@ -23,7 +24,33 @@ assert.equal(calls, 4);
 assert.equal(reply.observations.length, 1);
 assert.equal(reply.collections.length, 4);
 await assert.rejects(() => searchObservations(new URLSearchParams({ra:'bad'}), async () => { throw new Error('must not fetch'); }));
-await assert.rejects(() => searchObservations(params, async () => { throw new Error('offline'); }), /unavailable/);
+await assert.rejects(() => searchObservations(params, async () => { throw new Error('offline'); }), /not answering/);
+
+// New releases found in the bucket are searched too; their failures are marked and never fatal.
+const qr4Xml = xml.replaceAll('dr1/', 'qr4/').replace('spherex_dr1', 'spherex_qr4');
+assert.equal(parseVOTable(qr4Xml).observations.length, 0, 'unknown release ignored by default');
+const withQr4 = await searchObservations(params, async (url) => new Response(String(url).includes('qr4') ? qr4Xml : xml), ['spherex_qr4', 'spherex_qr4_deep']);
+assert.equal(withQr4.collections.length, 6);
+assert.ok(withQr4.observations.some((item) => item.productKey.startsWith('qr4/')));
+assert.ok(withQr4.collections.filter((c) => c.name.includes('qr4')).every((c) => c.discovered));
+const qr4Down = await searchObservations(params, async (url) => { if (String(url).includes('qr4')) throw new Error('down'); return new Response(xml); }, ['spherex_qr4']);
+assert.equal(qr4Down.collections.find((c) => c.name === 'spherex_qr4').status, 'unavailable');
+
+const bucket = (prefixes, prefix = '') => `<?xml version="1.0"?><ListBucketResult><Prefix>${prefix}</Prefix>${prefixes.map((p) => `<CommonPrefixes><Prefix>${p}</Prefix></CommonPrefixes>`).join('')}</ListBucketResult>`;
+assert.deepEqual(listedPrefixes(bucket(['dr1/', 'qr2/', 'qr3/'])), ['dr1/', 'qr2/', 'qr3/']);
+assert.deepEqual(newerReleases(['dr1', 'qr3'], ['dr1', 'qr2', 'qr3', 'qr4', 'dr2', 'xr9', 'tmp']), ['dr2', 'qr4']);
+const listing = async (url) => {
+  const prefix = url.searchParams.get('prefix') ?? '';
+  if (!prefix) return new Response(bucket(['dr1/', 'dr2/', 'qr3/', 'qr4/']));
+  if (prefix === 'qr4/') return new Response(bucket(['qr4/level2/', 'qr4/dark/'], prefix));
+  return new Response(bucket([`${prefix}dark/`], prefix)); // dr2 has no level2 images yet
+};
+assert.deepEqual(await discoverReleases(['dr1', 'qr3'], listing), ['qr4']);
+resetDiscovery();
+assert.deepEqual(await discoveredCollections(['spherex_dr1', 'spherex_qr3_deep'], listing, 1e12), ['spherex_qr4', 'spherex_qr4_deep']);
+resetDiscovery();
+assert.deepEqual(await discoveredCollections(['spherex_dr1'], async () => { throw new TypeError('offline'); }, 1e12), []);
+resetDiscovery();
 
 // Deep-field search steps back in 90-day windows when recent slices are empty (e.g. R Draconis in DR1 deep).
 const emptyXml = `<VOTABLE><RESOURCE><TABLE>${fields.map(name => `<FIELD name="${name}"/>`).join('')}<DATA><TABLEDATA></TABLEDATA></DATA></TABLE></RESOURCE></VOTABLE>`;
@@ -136,6 +163,20 @@ try {
     }, 0, 0, new AbortController().signal);
     assert.equal(waveFetches, 2);
     assert.ok(Math.abs(w5 - 4.4) < 1e-4);
+
+    const cancelled = new AbortController(), active = new AbortController();
+    const header = { ...mkHdr('d'), productKey: 'dr1/level2/2025W19_1B/l2b-v27-2026-197/4/d.fits' };
+    globalThis.fetch = async (_url, { signal }) => {
+      if (signal === cancelled.signal) {
+        await new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+      }
+      return new Response(waveBlock, { status: 206 });
+    };
+    const rejected = assert.rejects(sky.fetchWavelength(header, 0, 0, cancelled.signal), { name: 'AbortError' });
+    const usable = sky.fetchWavelength(header, 0, 0, active.signal);
+    cancelled.abort();
+    const [[w4]] = await Promise.all([usable, rejected]);
+    assert.ok(Math.abs(w4 - 4.4) < 1e-4);
   } finally { globalThis.fetch = originalFetch; }
 }
 
@@ -183,7 +224,7 @@ assert.equal(sky.parseRetryAfterMs(null, 1000), 1000);
     const diag = await sky.cacheDiagnostics();
     assert.ok(diag.memoryCrops >= 2, `Expected >=2 cached crops, got ${diag.memoryCrops}`);
     assert.ok(diag.memoryCropBytes > 0);
-    assert.equal(diag.waveGrids, 2);
+    assert.equal(diag.waveGrids, 3);
   } finally { globalThis.fetch = originalFetch; }
 }
 

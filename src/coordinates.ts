@@ -26,7 +26,7 @@ namespace SkyShift {
     return kind === "ra" && result === 360 ? 0 : result;
   }
 
-  export type Query = { kind: "target"; target: Target } | { kind: "coordinates"; ra: number; dec: number };
+  export type Query = { kind: "target"; target: Target } | { kind: "name"; name: string } | { kind: "coordinates"; ra: number; dec: number };
 
   const simplify = (text: string) => text.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]/g, "");
 
@@ -38,8 +38,9 @@ namespace SkyShift {
   }
 
   /**
-   * One search box: a bundled target name, or RA and Dec separated by a comma
-   * or by whitespace (each part accepts the forms of `parseCoordinate`).
+   * One search box: an example, any other object name (looked up by the
+   * server), or RA and Dec separated by a comma or by whitespace (each part
+   * accepts the forms of `parseCoordinate`).
    */
   export function parseQuery(input: string): Query {
     const text = input.trim().replaceAll("−", "-");
@@ -50,7 +51,8 @@ namespace SkyShift {
     if (/[a-z]/i.test(text.replace(/\d+(?:\.\d+)?\s*[hmsd]/gi, ""))) {
       const [match] = matchTargets(text);
       if (match) return { kind: "target", target: match };
-      throw new Error("Name search covers the five examples. Enter RA and Dec for any other field.");
+      if (text.length > 80) throw new Error("That name is too long.");
+      return { kind: "name", name: text.replace(/\s+/g, " ") };
     }
     let parts = text.includes(",") ? text.split(",") : text.split(/\s+/);
     if (!text.includes(",") && parts.length !== 2) {

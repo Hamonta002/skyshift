@@ -147,13 +147,15 @@ def _decode_rice_32(buf, npix, blocksize=32):
         if fs == 0:
             for _ in range(thisblock):
                 out.append(lastpix)
-        elif fs == 31:
+        # CFITSIO stores FS + 1 in the block header. FS=25 is direct
+        # 32-bit coding, while larger values are invalid for Rice_1.
+        elif fs == 26:
             for _ in range(thisblock):
                 diff = read_bits(32)
                 mapped = (diff >> 1) ^ (-(diff & 1))
                 lastpix = (lastpix + mapped) & 0xffffffff
                 out.append(lastpix)
-        else:
+        elif fs < 26:
             fs_bits = fs - 1
             for _ in range(thisblock):
                 top = 0
@@ -163,6 +165,8 @@ def _decode_rice_32(buf, npix, blocksize=32):
                 mapped = (diff >> 1) ^ (-(diff & 1))
                 lastpix = (lastpix + mapped) & 0xffffffff
                 out.append(lastpix)
+        else:
+            raise ValueError('Invalid Rice block code')
         i += thisblock
     return out
 

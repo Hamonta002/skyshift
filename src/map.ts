@@ -6,7 +6,9 @@ namespace SkyShift {
   export interface Camera { ra: number; dec: number; z: number }
 
   export const MAP_DEFAULT_ZOOM = 3;
-  export const MAP_MIN_ZOOM = -3;
+  // Keep a loaded cutout legible even when the user zooms well away from it.
+  // At z=-1 the field still occupies half its native pixel dimensions.
+  export const MAP_MIN_ZOOM = -1;
   export const MAP_MAX_ZOOM = 6;
   const DEG = Math.PI / 180;
   const ARCSEC = Math.PI / 648000;
