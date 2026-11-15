@@ -274,6 +274,8 @@ h2 { font-size: .95rem; font-weight: 650; }
 .here-actions button:not(.icon-button) { min-height: 34px; padding: 4px 12px; border-radius: 17px; font-size: .78rem; }
 .quick-spectrum { width: min(620px, 100%); max-height: min(60vh, 480px); overflow: auto; padding: 12px; }
 .spectrum-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.spectrum-metric { display: flex; align-items: center; gap: 7px; margin: 6px 0; font-size: .72rem; }
+.spectrum-metric select { min-height: 30px; font-size: inherit; }
 .quick-spectrum svg { display: block; width: 100%; height: auto; min-height: 180px; border-radius: 10px; }
 .quick-spectrum svg circle { cursor: crosshair; }
 .quick-spectrum svg circle:focus-visible { outline: 2px solid var(--accent); }

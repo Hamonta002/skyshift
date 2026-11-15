@@ -245,9 +245,9 @@
       <div class="here-actions">
         <button id="candidate-prev" type="button" aria-label="Previous candidate"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button>
         <button id="candidate-next" type="button" aria-label="Next candidate"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 6 6 6-6 6"/></svg></button>
-          <button id="candidate-blink" type="button">Blink</button>
-          <button id="candidate-spectrum" type="button">Generate Spectrum</button>
-          <button id="candidate-track" class="primary" type="button">Track &amp; identify</button>
+        <button id="candidate-blink" type="button">Blink</button>
+        <button id="candidate-spectrum" type="button">Generate Spectrum</button>
+        <button id="candidate-track" class="primary" type="button">Track &amp; identify</button>
         <button id="candidate-close" class="icon-button" type="button" aria-label="Close candidates"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
       </div>
     </div>
@@ -255,8 +255,8 @@
       <div class="here-text">
         <strong id="here-title">Sky position</strong>
         <span id="here-coords"></span>
-        <span id="here-value" title="SPHEREx calibrated surface brightness in MegaJanskys per steradian relative to the local background."></span>
-        <small class="brightness-note">SPHEREx calibrated surface brightness in MJy/sr relative to the local background.</small>
+        <span id="here-value"></span>
+        <small id="here-brightness-note" class="brightness-note"></small>
       </div>
       <div class="here-actions">
         <button id="here-spectrum-open" class="primary" type="button">Generate Spectrum</button>
@@ -272,6 +272,10 @@
         <div class="here-text"><strong id="quick-spectrum-title">On-the-fly spectrum</strong><span id="quick-spectrum-status" role="status"></span></div>
         <button id="quick-spectrum-close" class="icon-button" type="button" aria-label="Close spectrum">×</button>
       </div>
+      <label class="spectrum-metric">Plot <select id="quick-spectrum-metric">
+        <option value="surfaceBrightness">Surface brightness (MJy/sr)</option>
+        <option value="flux">Approximate flux (Jy)</option>
+      </select></label>
       <svg id="quick-spectrum-plot" viewBox="0 0 620 300" role="img" aria-label="Surface brightness by wavelength"></svg>
       <div id="quick-spectrum-legend" class="bands-legend" aria-label="SPHEREx detector band colors"></div>
       <output id="quick-spectrum-hover" class="spectrum-hover">Hover or focus a measurement for details.</output>
