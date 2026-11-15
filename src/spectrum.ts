@@ -1,3 +1,6 @@
+/// <reference path="science.ts" />
+/// <reference path="coordinates.ts" />
+/// <reference path="archive.ts" />
 namespace SkyShift {
   // SPHEREx image bit assignments documented by IRSA; unknown bits stay visible.
   export function decodeQualityFlags(value: number): string[] {
@@ -138,122 +141,144 @@ namespace SkyShift {
     return { label: "field centre", ra: fixture.ra0, dec: fixture.dec0 };
   }
 
+  /** Per-exposure aperture photometry outcome at one crop position. */
+  export interface ApertureMeasurement {
+    /** "aperture": clean 2.5 px aperture; "ring": 3–6 px wing estimate for a blanked core;
+     *  "edge": too close to the crop edge; "no-sky": < 30 finite sky pixels;
+     *  "blank-core": core blanked and too few finite wing pixels for a ring estimate. */
+    status: "aperture" | "ring" | "edge" | "no-sky" | "blank-core";
+    /** Flux in Jy, or null when no valid measurement exists (never 0 as a placeholder). */
+    flux: number | null;
+    error: number | null;
+    /** Crop-pixel position used (refined centroid when adopted). */
+    x: number;
+    y: number;
+    snr: number | null;
+    nanCore: number;
+    skyPixels: number;
+  }
+
+  export const SPHEREX_PIXEL_SR = 37.86 * (Math.PI / 648000) ** 2;
+
+  /**
+   * Quick-look photometry matching reference/measure_frames.py: median sky in an
+   * 8–14 px annulus with 1.4826·MAD noise, 8-iteration flux-weighted centroid in
+   * r ≤ 2.5 px, 2.5 px aperture sum (no aperture correction), and a 3–6 px ring
+   * fallback when the core contains blanked (saturated) pixels.
+   */
+  export function measureApertureAt(pixels: Float32Array, size: number, cx: number, cy: number): ApertureMeasurement {
+    const solidAngle = SPHEREX_PIXEL_SR;
+    const empty = (status: ApertureMeasurement["status"], nanCore = 0, skyPixels = 0): ApertureMeasurement =>
+      ({ status, flux: null, error: null, x: cx, y: cy, snr: null, nanCore, skyPixels });
+    if (cx < 4 || cy < 4 || cx >= size - 4 || cy >= size - 4) return empty("edge");
+    const sky: number[] = [];
+    let nanCore = 0;
+    for (let py = 0; py < size; py++) for (let px = 0; px < size; px++) {
+      const radius = Math.hypot(px - cx, py - cy);
+      const value = pixels[py * size + px];
+      if (radius <= 2.5 && !Number.isFinite(value)) nanCore++;
+      else if (radius > 8 && radius < 14 && Number.isFinite(value)) sky.push(value);
+    }
+    if (sky.length < 30) return empty("no-sky", nanCore, sky.length);
+    const background = arrayMedian(sky);
+    const mad = Math.max(1.4826 * arrayMedian(sky.map((v) => Math.abs(v - background))), 1e-9);
+    if (nanCore === 0) {
+      let tx = cx, ty = cy;
+      for (let iter = 0; iter < 8; iter++) {
+        let wSum = 0, wx = 0, wy = 0;
+        for (let py = 0; py < size; py++) for (let px = 0; px < size; px++) {
+          if (Math.hypot(px - tx, py - ty) <= 2.5) {
+            const value = pixels[py * size + px];
+            if (Number.isFinite(value) && value - background > 0) {
+              const w = value - background;
+              wSum += w; wx += px * w; wy += py * w;
+            }
+          }
+        }
+        if (wSum <= 0) break;
+        tx = wx / wSum; ty = wy / wSum;
+      }
+      const evalAperture = (ax: number, ay: number) => {
+        const vals: number[] = [];
+        let hasNan = false;
+        for (let py = 0; py < size; py++) for (let px = 0; px < size; px++) {
+          if (Math.hypot(px - ax, py - ay) <= 2.5) {
+            const value = pixels[py * size + px];
+            if (!Number.isFinite(value)) hasNan = true;
+            else vals.push(value - background);
+          }
+        }
+        const sum = vals.reduce((a, b) => a + b, 0);
+        const snr = vals.length ? sum / (mad * Math.sqrt(vals.length)) : 0;
+        return { vals, hasNan, sum, snr, x: ax, y: ay };
+      };
+      // Only adopt the refined centroid when signal-to-noise is solid and the core stays finite.
+      const refined = Math.hypot(tx - cx, ty - cy) <= 2.0 ? evalAperture(tx, ty) : null;
+      const chosen = refined && !refined.hasNan && refined.snr >= 5 ? refined : evalAperture(cx, cy);
+      if (!chosen.hasNan && chosen.vals.length >= 10) {
+        return {
+          status: "aperture",
+          flux: chosen.sum * solidAngle * 1e6,
+          error: mad * Math.sqrt(chosen.vals.length) * solidAngle * 1e6,
+          x: chosen.x, y: chosen.y, snr: chosen.snr, nanCore: 0, skyPixels: sky.length,
+        };
+      }
+      nanCore = Math.max(nanCore, 1);
+    }
+    // Saturated/blanked core fallback: 3-6 px PSF wing annulus (matching reference/measure_frames.py --wing).
+    let wingTotal = 0, wingValid = 0, wingSum = 0;
+    for (let py = 0; py < size; py++) for (let px = 0; px < size; px++) {
+      const radius = Math.hypot(px - cx, py - cy);
+      if (radius > 3 && radius <= 6) {
+        wingTotal++;
+        const value = pixels[py * size + px];
+        if (Number.isFinite(value)) { wingSum += value - background; wingValid++; }
+      }
+    }
+    if (wingTotal < 10 || wingValid <= 0.7 * wingTotal) return empty("blank-core", nanCore, sky.length);
+    const flux = (wingSum / wingValid) * wingTotal * solidAngle * 1e6;
+    const error = mad * Math.sqrt(wingTotal) * solidAngle * 1e6;
+    return { status: "ring", flux, error, x: cx, y: cy, snr: flux / error, nanCore, skyPixels: sky.length };
+  }
+
+  /** Aperture centre for one exposure, propagated with proper motion when available. */
+  export function exposureSkyPosition(target: SpectrumTarget, mjd: number | undefined): [number, number] {
+    if (mjd === undefined || target.pmra === undefined || target.pmdec === undefined) return [target.ra, target.dec];
+    return targetPosition({
+      ra: target.ra, dec: target.dec, raJ2000: target.raJ2000, decJ2000: target.decJ2000,
+      pmra: target.pmra, pmdec: target.pmdec, epoch: target.epoch,
+    }, mjd);
+  }
+
   export async function quickSpectrum(fixture: PackedFixture, signal: AbortSignal, target?: SpectrumTarget): Promise<SpectrumPoint[]> {
     const exposures = decodeFixture(fixture);
     const result: SpectrumPoint[] = [];
-    const astrometry = target ?? findTargetAt(fixture.ra0, fixture.dec0);
-    const solidAngle = 37.86 * (Math.PI / 648000) ** 2;
+    const astrometry: SpectrumTarget | undefined = target ?? findTargetAt(fixture.ra0, fixture.dec0);
     let index = 0;
     for (let visit = 0; visit < fixture.visitSizes.length; visit++) {
       for (let i = 0; i < fixture.visitSizes[visit]; i++, index++) {
         if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
         const exposure = exposures[index], h = exposure.header;
-        let ra = target?.ra ?? fixture.ra0, dec = target?.dec ?? fixture.dec0;
-        if (h.mjd !== undefined && astrometry && astrometry.pmra !== undefined && astrometry.pmdec !== undefined) {
-          [ra, dec] = targetPosition({
-            ra,
-            dec,
-            raJ2000: astrometry.raJ2000,
-            decJ2000: astrometry.decJ2000,
-            pmra: astrometry.pmra,
-            pmdec: astrometry.pmdec,
-            epoch: astrometry.epoch,
-          }, h.mjd);
-        }
+        const base: SpectrumTarget = { ...(astrometry ?? {}), ra: target?.ra ?? fixture.ra0, dec: target?.dec ?? fixture.dec0 };
+        const [ra, dec] = astrometry ? exposureSkyPosition(base, h.mjd) : [base.ra, base.dec];
         const [x, y] = worldToPixel(exposure.wcs, ra, dec);
-        const cx = x - h.x0, cy = y - h.y0;
-        if (cx < 4 || cy < 4 || cx >= h.size - 4 || cy >= h.size - 4) continue;
-        const sky: number[] = [];
-        let nanCore = 0;
-        for (let py = 0; py < h.size; py++) for (let px = 0; px < h.size; px++) {
-          const radius = Math.hypot(px - cx, py - cy);
-          const value = exposure.pixels[py * h.size + px];
-          if (radius <= 2.5 && !Number.isFinite(value)) nanCore++;
-          else if (radius > 8 && radius < 14 && Number.isFinite(value)) sky.push(value);
-        }
-        if (sky.length < 30) continue;
-        const background = arrayMedian(sky);
-        const mad = Math.max(1.4826 * arrayMedian(sky.map((v) => Math.abs(v - background))), 1e-9);
-        let mx = cx, my = cy;
-        let flux = NaN, error = NaN, saturated = false, mode: "aperture" | "ring" = "aperture";
-        if (nanCore === 0) {
-          let tx = cx, ty = cy;
-          for (let iter = 0; iter < 8; iter++) {
-            let wSum = 0, wx = 0, wy = 0;
-            for (let py = 0; py < h.size; py++) for (let px = 0; px < h.size; px++) {
-              if (Math.hypot(px - tx, py - ty) <= 2.5) {
-                const value = exposure.pixels[py * h.size + px];
-                if (Number.isFinite(value) && value - background > 0) {
-                  const w = value - background;
-                  wSum += w; wx += px * w; wy += py * w;
-                }
-              }
-            }
-            if (wSum <= 0) break;
-            tx = wx / wSum; ty = wy / wSum;
-          }
-          // Only adopt the refined centroid when signal-to-noise is solid and the core stays finite.
-          const evalAperture = (ax: number, ay: number) => {
-            const vals: number[] = [];
-            let hasNan = false;
-            for (let py = 0; py < h.size; py++) for (let px = 0; px < h.size; px++) {
-              if (Math.hypot(px - ax, py - ay) <= 2.5) {
-                const value = exposure.pixels[py * h.size + px];
-                if (!Number.isFinite(value)) hasNan = true;
-                else vals.push(value - background);
-              }
-            }
-            const sum = vals.reduce((a, b) => a + b, 0);
-            const snr = vals.length ? sum / (mad * Math.sqrt(vals.length)) : 0;
-            return { vals, hasNan, sum, snr };
-          };
-          const refined = Math.hypot(tx - cx, ty - cy) <= 2.0 ? evalAperture(tx, ty) : null;
-          const chosen = refined && !refined.hasNan && refined.snr >= 5 ? ((mx = tx), (my = ty), refined) : evalAperture(cx, cy);
-          if (!chosen.hasNan && chosen.vals.length >= 10) {
-            flux = chosen.sum * solidAngle * 1e6;
-            error = mad * Math.sqrt(chosen.vals.length) * solidAngle * 1e6;
-            saturated = false;
-            mode = "aperture";
-          } else {
-            nanCore = 1;
-          }
-        }
-        if (nanCore > 0) {
-          // Saturated/blanked core fallback: 3-6 px PSF wing annulus (matching reference/measure_frames.py --wing).
-          let wingTotal = 0, wingValid = 0, wingSum = 0;
-          for (let py = 0; py < h.size; py++) for (let px = 0; px < h.size; px++) {
-            const radius = Math.hypot(px - cx, py - cy);
-            if (radius > 3 && radius <= 6) {
-              wingTotal++;
-              const value = exposure.pixels[py * h.size + px];
-              if (Number.isFinite(value)) {
-                wingSum += value - background;
-                wingValid++;
-              }
-            }
-          }
-          if (wingTotal < 10 || wingValid <= 0.7 * wingTotal) continue;
-          flux = (wingSum / wingValid) * wingTotal * solidAngle * 1e6;
-          error = mad * Math.sqrt(wingTotal) * solidAngle * 1e6;
-          saturated = true;
-          mode = "ring";
-        }
-        if (!Number.isFinite(flux)) continue;
+        const m = measureApertureAt(exposure.pixels, h.size, x - h.x0, y - h.y0);
+        if ((m.status !== "aperture" && m.status !== "ring") || m.flux === null || m.error === null) continue;
         let wavelength: number, bandwidth: number;
-        try { [wavelength, bandwidth] = await fetchWavelength(h, mx + h.x0, my + h.y0, signal); }
+        try { [wavelength, bandwidth] = await fetchWavelength(h, m.x + h.x0, m.y + h.y0, signal); }
         catch (err) { if (signal.aborted) throw err; continue; }
         if (!Number.isFinite(wavelength)) continue;
         result.push({
           wavelength,
           bandwidth,
-          flux,
-          error,
+          flux: m.flux,
+          error: m.error,
           visit,
           date: fixture.dates[visit] ?? `Visit ${visit + 1}`,
           mjd: h.mjd ?? null,
           productKey: h.productKey ?? null,
-          saturated,
-          mode,
+          saturated: m.status === "ring",
+          mode: m.status === "ring" ? "ring" : "aperture",
         });
       }
     }

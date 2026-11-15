@@ -1,3 +1,7 @@
+/// <reference path="science.ts" />
+/// <reference path="wasm.ts" />
+/// <reference path="coordinates.ts" />
+/// <reference path="archive.ts" />
 namespace SkyShift {
   export type CacheLevel = "none" | "inputs" | "results" | "prime";
   export type CacheHit = "miss" | "inputs" | "results";
@@ -199,7 +203,12 @@ namespace SkyShift {
     return { series, cacheHit: cachedInputs ? "inputs" : "miss", computeMs, initializeMs, totalMs: performance.now() - started };
   }
 
-  export function installWorker(scope: DedicatedWorkerGlobalScope): void {
+  export interface WorkerScope {
+    onmessage: ((event: MessageEvent<WorkRequest>) => unknown) | null;
+    postMessage(message: WorkMessage, transfer?: Transferable[]): void;
+  }
+
+  export function installWorker(scope: WorkerScope): void {
     let activeController: AbortController | undefined;
     scope.onmessage = async (event: MessageEvent<WorkRequest>) => {
       activeController?.abort();

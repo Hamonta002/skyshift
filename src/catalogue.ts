@@ -1,3 +1,6 @@
+/// <reference path="science.ts" />
+/// <reference path="coordinates.ts" />
+/// <reference path="map.ts" />
 namespace SkyShift {
   export interface CatalogueSource {
     id: string;

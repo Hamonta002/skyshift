@@ -1,3 +1,14 @@
+/// <reference path="science.ts" />
+/// <reference path="wasm.ts" />
+/// <reference path="worker.ts" />
+/// <reference path="coordinates.ts" />
+/// <reference path="archive.ts" />
+/// <reference path="spectrum.ts" />
+/// <reference path="catalogue.ts" />
+/// <reference path="map.ts" />
+/// <reference path="track.ts" />
+/// <reference path="comparison.ts" />
+
 declare const ASSETS: {
   fixture: SkyShift.PackedFixture;
   wasm: string;
@@ -81,6 +92,11 @@ declare const ASSETS: {
   let currentTargetId: string | undefined = "wise0855";
   type CatalogueSource = SkyShift.CatalogueSource;
   const catalogues: Record<string, CatalogueSource[]> = {};
+  let comparisonTarget: SkyShift.SpectrumTarget | null = null;
+  let comparisonReference: SkyShift.SpectrumTarget | null = null;
+  let comparisonResult: SkyShift.StarComparison | null = null;
+  let comparisonCsvUrl: string | undefined;
+  let comparisonController: AbortController | undefined;
 
   // Map camera and screen geometry. The projection centre is the middle of the
   // viewport; `visible` is the part of the map not covered by floating chrome.
@@ -291,6 +307,7 @@ declare const ASSETS: {
     });
     refreshHere();
     if (tracked) drawLightCurve();
+    if (comparisonResult) drawComparisonChart();
     render();
   }
 
@@ -640,6 +657,34 @@ declare const ASSETS: {
           }
         }
       }
+      // Comparison Target & Reference star markers (propagated to current MJD).
+      const drawCompPin = (star: SkyShift.SpectrumTarget, color: string, tag: string) => {
+        const [sra, sdec] = SkyShift.exposureSkyPosition(star, mjd);
+        const p = toScreen(sra, sdec, k);
+        if (!p) return;
+        const size = Math.max(9, 1.8 * pixelPx);
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(p[0], p[1] - size); ctx.lineTo(p[0] + size, p[1]);
+        ctx.lineTo(p[0], p[1] + size); ctx.lineTo(p[0] - size, p[1]);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.font = "600 10px system-ui, sans-serif";
+        const tw = ctx.measureText(tag).width;
+        const lx = p[0] - tw / 2 - 4, ly = p[1] + size + 3;
+        ctx.fillStyle = "rgba(8, 13, 24, 0.9)";
+        ctx.fillRect(lx, ly, tw + 8, 14);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(lx, ly, tw + 8, 14);
+        ctx.fillStyle = color;
+        ctx.fillText(tag, p[0] - tw / 2, ly + 11);
+        ctx.restore();
+      };
+      if (comparisonTarget) drawCompPin(comparisonTarget, "#a6e8dc", "Target");
+      if (comparisonReference) drawCompPin(comparisonReference, "#f3c97a", "Ref");
     }
     if (selected) {
       const p = toScreen(selected.ra, selected.dec, k);
@@ -957,6 +1002,8 @@ declare const ASSETS: {
       : "";
     get("here-value").textContent = fluxPart + epochPart;
     get("here-track").hidden = !pixel.inside;
+    get("here-set-target").hidden = !pixel.inside || embed;
+    get("here-set-reference").hidden = !pixel.inside || embed;
     get("here-search").hidden = pixel.inside || embed;
   }
   get("here-close").addEventListener("click", () => { hideHere(); mapCanvas.focus(); });
@@ -967,6 +1014,21 @@ declare const ASSETS: {
     if (p) panScreen(vx - p[0], vy - p[1]);
   });
   get("here-search").addEventListener("click", () => { if (selected) void searchFromOptions(selected.ra, selected.dec); });
+  get("here-set-target").addEventListener("click", () => {
+    if (!selected) return;
+    setComparisonSlot("target", selectedToSpectrumTarget(selected));
+    openComparisonSection();
+    if (comparisonReference) void runComparison();
+  });
+  get("here-set-reference").addEventListener("click", () => {
+    if (!selected) return;
+    setComparisonSlot("reference", selectedToSpectrumTarget(selected));
+    if (!comparisonTarget) {
+      setComparisonSlot("target", SkyShift.resolveSpectrumTarget(fixture, currentTargetId, tracked, null));
+    }
+    openComparisonSection();
+    if (comparisonTarget) void runComparison();
+  });
   get("here-copy").addEventListener("click", () => {
     if (selected) void copyText(`${selected.ra.toFixed(6)}, ${selected.dec.toFixed(6)}`, "Coordinates copied.");
   });
@@ -1020,6 +1082,7 @@ declare const ASSETS: {
           });
         }
         list.append(summary, text); get("catalogue-list").append(list);
+        refreshComparisonPicker();
       } catch (error) {
         checkbox.checked = false;
         output.textContent = error instanceof TypeError ? "Catalogue overlays need the SkyShift server (npm run dev)." : error instanceof Error ? error.message : String(error);
@@ -1032,6 +1095,7 @@ declare const ASSETS: {
     for (const name of ["gaia", "wise"]) { delete catalogues[name]; get<HTMLInputElement>(name).checked = false; }
     get("catalogue-list").replaceChildren();
     get("catalogue-status").textContent = "";
+    refreshComparisonPicker();
   }
 
   function step(delta: number): void {
@@ -1626,6 +1690,465 @@ declare const ASSETS: {
       output.textContent = `${points.length} measurements at ${spectrumTarget.label ?? "target"} (${ seenVisits.length } ${seenVisits.length === 1 ? "visit" : "visits"}) · ${modeNote}`;
     } catch (error) { output.textContent = error instanceof Error ? error.message : String(error); }
   });
+
+  // ------------------------------------------------ comparison star ----
+  function revokeComparisonCsvUrl(): void {
+    if (!comparisonCsvUrl) return;
+    URL.revokeObjectURL(comparisonCsvUrl);
+    comparisonCsvUrl = undefined;
+    const download = get<HTMLAnchorElement>("comp-download");
+    download.removeAttribute("href");
+    download.hidden = true;
+  }
+
+  function catalogueSourceToTarget(src: CatalogueSource): SkyShift.SpectrumTarget {
+    return {
+      label: SkyShift.formatCatalogueSource(src),
+      ra: src.ra,
+      dec: src.dec,
+      pmra: src.pmra ?? undefined,
+      pmdec: src.pmdec ?? undefined,
+      epoch: src.epoch ?? undefined,
+    };
+  }
+
+  function selectedToSpectrumTarget(sel: NonNullable<typeof selected>): SkyShift.SpectrumTarget {
+    if (sel.source) return catalogueSourceToTarget(sel.source);
+    const known = SkyShift.findTargetAt(sel.ra, sel.dec, 0.005);
+    if (known) return known;
+    return {
+      label: sel.label ?? `${SkyShift.formatRa(sel.ra, 0.01)} ${SkyShift.formatDec(sel.dec, 0.1)}`,
+      ra: sel.ra,
+      dec: sel.dec,
+      pmra: sel.pmra,
+      pmdec: sel.pmdec,
+      epoch: sel.epoch,
+    };
+  }
+
+  function formatStarSummary(star: SkyShift.SpectrumTarget | null, placeholder: string): string {
+    if (!star) return placeholder;
+    const name = star.label ?? "Selected star";
+    const coords = `${SkyShift.formatRa(star.ra, 0.01)} ${SkyShift.formatDec(star.dec, 0.1)}`;
+    const pm = star.pmra !== undefined && star.pmdec !== undefined
+      ? ` · μ=(${(star.pmra / 1000).toFixed(2)}″, ${(star.pmdec / 1000).toFixed(2)}″)/yr${star.epoch ? ` @ ${star.epoch}` : ""}`
+      : "";
+    return `${name} · ${coords}${pm}`;
+  }
+
+  function updateComparisonSlots(): void {
+    get("comp-target-info").textContent = formatStarSummary(
+      comparisonTarget,
+      "None selected — click a star on the map or use tracked object.",
+    );
+    get("comp-ref-info").textContent = formatStarSummary(
+      comparisonReference,
+      "None selected — click any star / Gaia source on the map or choose below.",
+    );
+    get<HTMLButtonElement>("comp-target-clear").disabled = !comparisonTarget;
+    get<HTMLButtonElement>("comp-ref-clear").disabled = !comparisonReference;
+    get<HTMLButtonElement>("comp-swap").disabled = !comparisonTarget && !comparisonReference;
+  }
+
+  function setComparisonSlot(role: "target" | "reference", star: SkyShift.SpectrumTarget | null): void {
+    if (role === "target") comparisonTarget = star;
+    else comparisonReference = star;
+    comparisonResult = null;
+    get("comp-results").hidden = true;
+    revokeComparisonCsvUrl();
+    updateComparisonSlots();
+    render();
+  }
+
+  function openComparisonSection(): void {
+    const details = get<HTMLDetailsElement>("comparison-tools");
+    details.open = true;
+    openPanel();
+    details.scrollIntoView({ block: "nearest" });
+  }
+
+  function refreshComparisonPicker(): void {
+    const picker = get<HTMLSelectElement>("comp-ref-picker");
+    const first = document.createElement("option");
+    first.value = "";
+    const allSources: { key: string; label: string; src: CatalogueSource }[] = [];
+    for (const catName of ["gaia", "wise"] as const) {
+      const list = catalogues[catName] ?? [];
+      list.forEach((src, i) => {
+        const tag = catName === "wise" ? "CatWISE2020" : "Gaia DR3";
+        const mag = src.magnitude != null && Number.isFinite(src.magnitude)
+          ? ` (${catName === "wise" ? "W1" : "G"}=${src.magnitude.toFixed(1)})`
+          : "";
+        allSources.push({ key: `${catName}:${i}`, label: `${tag} ${src.id}${mag}`, src });
+      });
+    }
+    first.textContent = allSources.length
+      ? `Choose from ${allSources.length} loaded catalogue source(s)…`
+      : "Load Gaia DR3 or CatWISE2020 overlays first…";
+    picker.replaceChildren(first, ...allSources.map((entry) => {
+      const opt = document.createElement("option");
+      opt.value = entry.key;
+      opt.textContent = entry.label;
+      return opt;
+    }));
+  }
+
+  get<HTMLSelectElement>("comp-ref-picker").addEventListener("change", (event) => {
+    const val = (event.target as HTMLSelectElement).value;
+    if (!val) return;
+    const [catName, idxStr] = val.split(":");
+    const src = catalogues[catName]?.[Number(idxStr)];
+    if (!src) return;
+    setComparisonSlot("reference", catalogueSourceToTarget(src));
+    if (!comparisonTarget) {
+      setComparisonSlot("target", SkyShift.resolveSpectrumTarget(fixture, currentTargetId, tracked, null));
+    }
+    const mjd = frameMjd();
+    const year = mjd === undefined ? null : SkyShift.mjdToJulianYear(mjd);
+    const [ra, dec] = SkyShift.cataloguePosition(src, year);
+    ensureVisible(ra, dec);
+    if (comparisonTarget && comparisonReference) void runComparison();
+  });
+
+  get("comp-use-tracked").addEventListener("click", () => {
+    const target = SkyShift.resolveSpectrumTarget(fixture, currentTargetId, tracked, selected);
+    setComparisonSlot("target", target);
+    if (comparisonTarget && comparisonReference) void runComparison();
+  });
+  get("comp-target-clear").addEventListener("click", () => setComparisonSlot("target", null));
+  get("comp-ref-clear").addEventListener("click", () => {
+    get<HTMLSelectElement>("comp-ref-picker").value = "";
+    setComparisonSlot("reference", null);
+  });
+  get("comp-swap").addEventListener("click", () => {
+    const prevTarget = comparisonTarget;
+    comparisonTarget = comparisonReference;
+    comparisonReference = prevTarget;
+    comparisonResult = null;
+    get("comp-results").hidden = true;
+    revokeComparisonCsvUrl();
+    updateComparisonSlots();
+    render();
+    if (comparisonTarget && comparisonReference) void runComparison();
+  });
+  get("comp-load-gaia").addEventListener("click", () => {
+    const box = get<HTMLInputElement>("gaia");
+    if (!box.checked) {
+      box.checked = true;
+      void toggleCatalogue("gaia");
+    } else if (!catalogues.gaia) {
+      void toggleCatalogue("gaia");
+    } else {
+      get("comp-status").textContent = `${catalogues.gaia.length} Gaia DR3 sources ready in the dropdown or on the map.`;
+    }
+  });
+
+  function drawComparisonChart(): void {
+    const comp = comparisonResult;
+    const canvas = get<HTMLCanvasElement>("comp-chart");
+    if (!comp) return;
+    const validVisits = comp.visits.filter((v) => v.ratio !== null && v.target !== null && v.reference !== null);
+    if (!validVisits.length) {
+      canvas.hidden = true;
+      return;
+    }
+    canvas.hidden = false;
+    const W = 380, H = 250;
+    const ctx = setupHiDpiCanvas(canvas, W, H);
+    ctx.clearRect(0, 0, W, H);
+
+    const mjds = comp.visits.map((v) => v.mjd).filter((m): m is number => m !== null && Number.isFinite(m));
+    const useMjd = mjds.length === validVisits.length && mjds.length >= 2 && Math.max(...mjds) > Math.min(...mjds);
+    const minMjd = useMjd ? Math.min(...mjds) : 0;
+    const maxMjd = useMjd ? Math.max(...mjds) : Math.max(comp.visits.length - 1, 1);
+    const left = 54, right = 12, xSpan = W - left - right;
+    const xOf = (v: SkyShift.VisitComparison) => {
+      if (useMjd && v.mjd !== null) return left + (v.mjd - minMjd) / Math.max(maxMjd - minMjd, 1e-6) * xSpan;
+      return left + (v.visit / Math.max(comp.visits.length - 1, 1)) * xSpan;
+    };
+
+    const maxTargetFlux = Math.max(...validVisits.map((v) => Math.abs(v.target!.value)));
+    const maxRefFlux = Math.max(...validVisits.map((v) => Math.abs(v.reference!.value)));
+    const fluxFormat = (maxAbs: number) => maxAbs >= 0.1
+      ? { scale: 1, unit: "Jy" }
+      : { scale: 1e3, unit: "mJy" };
+    const tFmt = fluxFormat(maxTargetFlux);
+    const rFmt = fluxFormat(maxRefFlux);
+
+    const panels: {
+      top: number; height: number; title: string; color: string; zeroLine?: number;
+      series: { visit: number; val: number; err: number; estimate: boolean }[];
+    }[] = [
+      {
+        top: 16, height: 54, title: `Target (${tFmt.unit})`, color: "#a6e8dc",
+        series: validVisits.map((v) => ({
+          visit: v.visit, val: v.target!.value * tFmt.scale, err: v.target!.error * tFmt.scale,
+          estimate: comp.mode === "estimate",
+        })),
+      },
+      {
+        top: 86, height: 54, title: `Reference (${rFmt.unit})`, color: "#f3c97a",
+        series: validVisits.map((v) => ({
+          visit: v.visit, val: v.reference!.value * rFmt.scale, err: v.reference!.error * rFmt.scale,
+          estimate: comp.mode === "estimate",
+        })),
+      },
+      {
+        top: 156, height: 60, title: "Differential Δmag (up=brighter)", color: "#ff9ad5", zeroLine: 0,
+        series: validVisits.filter((v) => v.deltaMag !== null).map((v) => ({
+          visit: v.visit, val: v.deltaMag!.value, err: v.deltaMag!.error,
+          estimate: comp.mode === "estimate",
+        })),
+      },
+    ];
+
+    for (const p of panels) {
+      ctx.strokeStyle = "#26324a";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(left, p.top, xSpan, p.height);
+      ctx.fillStyle = "#c9d4e5";
+      ctx.font = "600 10px system-ui, sans-serif";
+      ctx.fillText(p.title, left, p.top - 4);
+      if (!p.series.length) continue;
+
+      let lo = Math.min(...p.series.map((s) => s.val - s.err));
+      let hi = Math.max(...p.series.map((s) => s.val + s.err));
+      if (p.zeroLine !== undefined) {
+        lo = Math.min(lo, -0.05);
+        hi = Math.max(hi, 0.05);
+      }
+      const pad = Math.max((hi - lo) * 0.15, p.zeroLine !== undefined ? 0.02 : 1e-6);
+      lo -= pad; hi += pad;
+      const yOf = (val: number) => p.zeroLine !== undefined
+        // Differential magnitude panel: smaller / negative Δmag is brighter (higher on plot).
+        ? p.top + ((val - lo) / Math.max(hi - lo, 1e-12)) * p.height
+        : p.top + ((hi - val) / Math.max(hi - lo, 1e-12)) * p.height;
+
+      if (p.zeroLine !== undefined) {
+        const y0 = yOf(p.zeroLine);
+        ctx.strokeStyle = "#3a4a68";
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath(); ctx.moveTo(left, y0); ctx.lineTo(left + xSpan, y0); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      ctx.fillStyle = "#8d9bb3";
+      ctx.font = "9px ui-monospace, monospace";
+      ctx.textAlign = "right";
+      const topLabel = p.zeroLine !== undefined ? `${lo >= 0 ? "+" : ""}${lo.toFixed(2)}` : hi.toPrecision(3);
+      const botLabel = p.zeroLine !== undefined ? `${hi >= 0 ? "+" : ""}${hi.toFixed(2)}` : lo.toPrecision(3);
+      ctx.fillText(topLabel, left - 4, p.top + 8);
+      ctx.fillText(botLabel, left - 4, p.top + p.height);
+      ctx.textAlign = "left";
+
+      // Connecting line
+      ctx.strokeStyle = p.color + "88";
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      p.series.forEach((pt, idx) => {
+        const v = comp.visits[pt.visit];
+        const x = xOf(v), y = yOf(pt.val);
+        if (idx === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      // Points + error bars
+      for (const pt of p.series) {
+        const v = comp.visits[pt.visit];
+        const x = xOf(v), y = yOf(pt.val);
+        const yLo = Math.max(p.top, Math.min(p.top + p.height, yOf(pt.val - pt.err)));
+        const yHi = Math.max(p.top, Math.min(p.top + p.height, yOf(pt.val + pt.err)));
+        ctx.strokeStyle = p.color;
+        ctx.fillStyle = pt.estimate ? "#0b111c" : p.color;
+        ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.moveTo(x, yLo); ctx.lineTo(x, yHi); ctx.stroke();
+        ctx.beginPath(); ctx.arc(x, y, pt.visit === frame ? 4 : 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        if (pt.visit === frame && !arithmeticView()) {
+          ctx.strokeStyle = "#ffffff";
+          ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.arc(x, y, 6.2, 0, Math.PI * 2); ctx.stroke();
+        }
+      }
+    }
+
+    // Shared X-axis visit labels
+    ctx.fillStyle = "#95a3bd";
+    ctx.font = "9px ui-monospace, monospace";
+    const every = Math.max(1, Math.ceil(validVisits.length / 4));
+    for (let i = 0; i < validVisits.length; i += every) {
+      const v = validVisits[i];
+      const x = xOf(v);
+      ctx.textAlign = i === 0 ? "left" : i >= validVisits.length - 1 ? "right" : "center";
+      ctx.fillText(labelFor(v.visit).slice(0, 10), x, H - 14);
+      if (v.waveMin !== null && v.waveMax !== null) {
+        ctx.fillText(`${v.waveMin.toFixed(1)}–${v.waveMax.toFixed(1)}μm`, x, H - 3);
+      }
+    }
+    ctx.textAlign = "left";
+  }
+
+  async function runComparison(): Promise<void> {
+    if (!series) return;
+    if (!comparisonTarget) {
+      comparisonTarget = SkyShift.resolveSpectrumTarget(fixture, currentTargetId, tracked, selected);
+      updateComparisonSlots();
+    }
+    if (!comparisonReference) {
+      get("comp-status").textContent = "Choose a reference star from Gaia DR3, CatWISE2020, or by clicking on the map.";
+      return;
+    }
+    comparisonController?.abort();
+    const controller = new AbortController();
+    comparisonController = controller;
+    const output = get("comp-status");
+    const resultsBox = get("comp-results");
+    resultsBox.hidden = true;
+    revokeComparisonCsvUrl();
+    output.textContent = "Measuring target and reference brightness across exposures…";
+
+    try {
+      const exposures = SkyShift.decodeFixture(fixture);
+      const targetSeries = await SkyShift.measureStarSeries(fixture, comparisonTarget, controller.signal, exposures);
+      const refSeries = await SkyShift.measureStarSeries(fixture, comparisonReference, controller.signal, exposures);
+      if (controller.signal.aborted) return;
+
+      let flagsUnavailable = 0;
+      if (get<HTMLInputElement>("comp-check-flags").checked) {
+        output.textContent = "Inspecting SPHEREx FLAGS around target and reference apertures…";
+        const flagCache = new Map<string, number>();
+        const queryFlag = async (m: SkyShift.StarMeasurement): Promise<void> => {
+          if ((m.status !== "measured" && m.status !== "estimate") || !m.productKey || m.detectorX === null || m.detectorY === null) return;
+          const ix = Math.round(m.detectorX), iy = Math.round(m.detectorY);
+          if (ix < 0 || ix >= 2040 || iy < 0 || iy >= 2040) return;
+          const cacheKey = `${m.productKey}:${ix}:${iy}`;
+          if (flagCache.has(cacheKey)) { m.flags = flagCache.get(cacheKey)!; return; }
+          try {
+            const q = new URLSearchParams({ key: m.productKey, x: String(ix), y: String(iy) });
+            const res = await fetch(`/api/quality?${q}`, { signal: controller.signal });
+            if (!res.ok) { flagsUnavailable++; return; }
+            const data = await res.json();
+            if (typeof data.combined === "number") {
+              flagCache.set(cacheKey, data.combined);
+              m.flags = data.combined;
+            }
+          } catch (err) {
+            if (controller.signal.aborted) throw err;
+            flagsUnavailable++;
+          }
+        };
+        for (const m of targetSeries) await queryFlag(m);
+        for (const m of refSeries) await queryFlag(m);
+      }
+
+      const midMjd = fixture.headers.map((h) => h.mjd).find((m): m is number => m !== undefined && Number.isFinite(m));
+      const [tRa, tDec] = SkyShift.exposureSkyPosition(comparisonTarget, midMjd);
+      const [rRa, rDec] = SkyShift.exposureSkyPosition(comparisonReference, midMjd);
+      const sepArcsec = SkyShift.separation(tRa, tDec, rRa, rDec);
+      const comp = SkyShift.compareStars(targetSeries, refSeries, fixture.dates, sepArcsec);
+      comparisonResult = comp;
+
+      const assessEl = get("comp-assessment");
+      assessEl.className = `comp-assessment ${comp.assessment.severity}`;
+      assessEl.replaceChildren();
+      const verdictHead = document.createElement("strong");
+      verdictHead.textContent = comp.verdictText;
+      assessEl.append(verdictHead);
+      const metaLine = document.createElement("div");
+      const modeText = comp.mode === "estimate"
+        ? "Estimate mode (3–6 px wing ring for saturated cores)"
+        : comp.mode === "measured"
+          ? "Measured mode (2.5 px aperture)"
+          : "No usable pairs";
+      metaLine.textContent = `${comp.usablePairs} of ${comp.pairs.length} paired exposures usable · Separation ${sepArcsec.toFixed(1)}″ · ${modeText}${comp.chi2 !== null && comp.dof > 0 ? ` · χ²/dof = ${(comp.chi2 / comp.dof).toFixed(2)}` : ""}`;
+      assessEl.append(metaLine);
+      if (comp.assessment.reasons.length || flagsUnavailable) {
+        const ul = document.createElement("ul");
+        for (const reason of comp.assessment.reasons) {
+          const li = document.createElement("li"); li.textContent = reason; ul.append(li);
+        }
+        if (flagsUnavailable) {
+          const li = document.createElement("li");
+          li.textContent = `FLAGS metadata could not be queried for ${flagsUnavailable} aperture lookup(s); pixel-flag rejection skipped where unavailable.`;
+          ul.append(li);
+        }
+        assessEl.append(ul);
+      }
+
+      // Render matched-wavelength bins table
+      const binsBox = get("comp-bins");
+      binsBox.replaceChildren();
+      if (comp.bins.length) {
+        const tbl = document.createElement("table");
+        const thead = tbl.createTHead().insertRow();
+        for (const h of ["Matched λ", "Δmag (max−min)", "Significance"]) {
+          const th = document.createElement("th"); th.textContent = h; thead.append(th);
+        }
+        const tbody = tbl.createTBody();
+        for (const b of comp.bins) {
+          const row = tbody.insertRow();
+          row.insertCell().textContent = `${b.minWave.toFixed(2)}–${b.maxWave.toFixed(2)} μm`;
+          row.insertCell().textContent = b.deltaMag !== null && b.deltaMagError !== null
+            ? `${b.deltaMag.toFixed(3)} ± ${b.deltaMagError.toFixed(3)}`
+            : "–";
+          row.insertCell().textContent = b.sigma !== null
+            ? `${b.sigma.toFixed(1)}σ${b.significant ? " ★" : ""}`
+            : "<2 visits";
+        }
+        binsBox.append(tbl);
+      }
+
+      // Render per-visit table
+      const vTable = get<HTMLTableElement>("comp-visits-table");
+      vTable.replaceChildren();
+      const vHead = vTable.createTHead().insertRow();
+      for (const h of ["Visit", "MJD", "Pairs", "λ (μm)", "Target (Jy)", "Ref (Jy)", "Ratio", "Δmag"]) {
+        const th = document.createElement("th"); th.textContent = h; vHead.append(th);
+      }
+      const vBody = vTable.createTBody();
+      for (const v of comp.visits) {
+        const row = vBody.insertRow();
+        row.insertCell().textContent = labelFor(v.visit).slice(0, 10);
+        row.insertCell().textContent = v.mjd !== null ? v.mjd.toFixed(2) : "–";
+        row.insertCell().textContent = String(v.pairs);
+        row.insertCell().textContent = v.waveMin !== null && v.waveMax !== null ? `${v.waveMin.toFixed(2)}–${v.waveMax.toFixed(2)}` : "–";
+        row.insertCell().textContent = v.target ? `${v.target.value.toPrecision(3)} ± ${v.target.error.toPrecision(2)}` : "–";
+        row.insertCell().textContent = v.reference ? `${v.reference.value.toPrecision(3)} ± ${v.reference.error.toPrecision(2)}` : "–";
+        row.insertCell().textContent = v.ratio ? `${v.ratio.value.toPrecision(3)} ± ${v.ratio.error.toPrecision(2)}` : "–";
+        row.insertCell().textContent = v.deltaMag ? `${v.deltaMag.value >= 0 ? "+" : ""}${v.deltaMag.value.toFixed(3)}` : "–";
+      }
+
+      // Assumptions list
+      const assumEl = get("comp-assumptions");
+      assumEl.replaceChildren(...comp.assumptions.map((text) => {
+        const li = document.createElement("li"); li.textContent = text; return li;
+      }));
+
+      // CSV export
+      const csvHeader = "exposure,visit,date,mjd,mode,usable,reason,target_status,target_flux_jy,target_err_jy,target_wave_um,ref_status,ref_flux_jy,ref_err_jy,ref_wave_um,ratio,ratio_err";
+      const csvLines = comp.pairs.map((p) => [
+        p.exposure + 1, p.visit + 1, `"${p.date}"`, p.mjd ?? "", p.mode ?? "", p.usable,
+        `"${(p.reason ?? "").replaceAll('"', '""')}"`,
+        p.target.status, p.target.flux ?? "", p.target.error ?? "", p.target.wavelength ?? "",
+        p.reference.status, p.reference.flux ?? "", p.reference.error ?? "", p.reference.wavelength ?? "",
+        p.ratio ?? "", p.ratioError ?? "",
+      ].join(","));
+      comparisonCsvUrl = URL.createObjectURL(new Blob([csvHeader + "\n" + csvLines.join("\n")], { type: "text/csv" }));
+      const dl = get<HTMLAnchorElement>("comp-download");
+      dl.href = comparisonCsvUrl;
+      dl.hidden = false;
+
+      resultsBox.hidden = false;
+      drawComparisonChart();
+      output.textContent = `Comparison complete: ${comp.usablePairs} usable pairs across ${comp.visits.filter((v) => v.ratio).length} visit(s).`;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      output.textContent = error instanceof Error ? error.message : String(error);
+    }
+  }
+  get("comp-run").addEventListener("click", () => void runComparison());
+  updateComparisonSlots();
   run.addEventListener("click", () => void benchmarkEngines());
   cancel.addEventListener("click", () => interrupt?.());
   function manualStep(delta: number): void {
@@ -1706,6 +2229,15 @@ declare const ASSETS: {
     get("spectrum-comparison").hidden = true;
     get("spectrum-comparison").textContent = "";
     get("spectrum-status").textContent = "";
+    comparisonController?.abort();
+    comparisonTarget = null;
+    comparisonReference = null;
+    comparisonResult = null;
+    revokeComparisonCsvUrl();
+    get("comp-results").hidden = true;
+    get("comp-status").textContent = "";
+    get<HTMLSelectElement>("comp-ref-picker").value = "";
+    updateComparisonSlots();
     updateColourToggle();
   }
 

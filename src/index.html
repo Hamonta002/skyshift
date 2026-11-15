@@ -145,6 +145,56 @@
         <p id="spectrum-comparison" class="options-note" hidden></p>
         <a id="spectrum-download" hidden download="skyshift-spectrum.csv">Download spectrum CSV</a>
       </details>
+      <details class="tools" id="comparison-tools">
+        <summary>Comparison star</summary>
+        <p>Compare a target star against a reference star across SPHEREx exposures using proper-motion-aware aperture photometry and matched wavelengths.</p>
+        <div class="comp-slots">
+          <div class="comp-slot">
+            <div class="comp-slot-head">
+              <span class="comp-badge target">Target</span>
+              <div class="comp-slot-actions">
+                <button id="comp-use-tracked" type="button" title="Use currently tracked or field star">From tracked/field</button>
+                <button id="comp-target-clear" type="button">Clear</button>
+              </div>
+            </div>
+            <div id="comp-target-info" class="comp-slot-info">None selected — click a star on the map or use tracked object.</div>
+          </div>
+          <div class="comp-slot">
+            <div class="comp-slot-head">
+              <span class="comp-badge ref">Reference</span>
+              <div class="comp-slot-actions">
+                <button id="comp-load-gaia" type="button" title="Load Gaia DR3 overlay to pick a reference">Load Gaia</button>
+                <button id="comp-swap" type="button" title="Swap target and reference">Swap</button>
+                <button id="comp-ref-clear" type="button">Clear</button>
+              </div>
+            </div>
+            <div id="comp-ref-info" class="comp-slot-info">None selected — click any star / Gaia source on the map or choose below.</div>
+            <label class="comp-picker-label">Catalogue source
+              <select id="comp-ref-picker"><option value="">Choose from loaded Gaia / CatWISE…</option></select>
+            </label>
+          </div>
+        </div>
+        <label class="comp-flag-check"><input id="comp-check-flags" type="checkbox"> Check SPHEREx FLAGS at apertures (server)</label>
+        <button id="comp-run" type="button">Compare brightness</button>
+        <p id="comp-status" role="status"></p>
+        <div id="comp-results" hidden>
+          <div id="comp-assessment" class="comp-assessment" role="status"></div>
+          <figure class="comp-figure">
+            <canvas id="comp-chart" width="760" height="440" role="img" aria-label="Target, reference, and differential brightness graphs"></canvas>
+            <figcaption id="comp-chart-caption">Top: Target flux · Middle: Reference flux · Bottom: Differential variation Δmag (up = brighter). Hollow points denote 3–6 px ring estimates of saturated cores.</figcaption>
+          </figure>
+          <div id="comp-bins" class="comp-bins"></div>
+          <details class="comp-details">
+            <summary>Per-visit measurements &amp; wavelengths</summary>
+            <div class="table-scroll"><table id="comp-visits-table"></table></div>
+          </details>
+          <details class="comp-details">
+            <summary>Assumptions &amp; reliability notes</summary>
+            <ul id="comp-assumptions" class="comp-assumptions"></ul>
+          </details>
+          <a id="comp-download" hidden download="skyshift-comparison.csv">Download comparison CSV</a>
+        </div>
+      </details>
       <details class="tools" id="colour-tools">
         <summary>Colour composite</summary>
         <p>Combine three detector bands into one colour image, stacked over all visits, with the longest wavelength in red. Brown dwarfs and cool, dusty stars stand out as red. Bands other than the loaded one are downloaded from the archive, about 20–25 MB each.</p>
@@ -272,6 +322,8 @@
       </div>
       <div class="here-actions">
         <button id="here-track" class="primary" type="button" title="Track and identify (T)">Track &amp; identify</button>
+        <button id="here-set-target" type="button" title="Select as Target star for comparison">Set target</button>
+        <button id="here-set-reference" type="button" title="Select as Reference comparison star">Set reference</button>
         <button id="here-center" type="button">Center here</button>
         <button id="here-search" type="button">Search here</button>
         <button id="here-copy" type="button">Copy</button>

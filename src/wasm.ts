@@ -1,3 +1,4 @@
+/// <reference path="science.ts" />
 namespace SkyShift {
   interface NumericalExports {
     memory: WebAssembly.Memory;

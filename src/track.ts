@@ -1,3 +1,7 @@
+/// <reference path="science.ts" />
+/// <reference path="coordinates.ts" />
+/// <reference path="catalogue.ts" />
+/// <reference path="map.ts" />
 namespace SkyShift {
   // Object tracking, motion fitting, mover detection and classification on
   // aligned grids. Grid pixels are zero-based with x increasing west and y

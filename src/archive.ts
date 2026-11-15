@@ -1,3 +1,4 @@
+/// <reference path="science.ts" />
 namespace SkyShift {
   export interface Observation {
     id: string;

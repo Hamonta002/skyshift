@@ -189,6 +189,37 @@ h2 { font-size: .95rem; font-weight: 650; }
 .band-picks label { display: grid; gap: 3px; margin: 0; font-size: .76rem; }
 .band-picks select { width: 100%; min-width: 0; padding-inline: 4px; font-size: .74rem; }
 
+/* Comparison star analysis panel. */
+.comp-slots { display: grid; gap: 8px; margin: 8px 0; }
+.comp-slot { padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: #101827; display: grid; gap: 6px; }
+.comp-slot-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.comp-badge { padding: 2px 8px; border-radius: 999px; font: 700 .68rem var(--mono); text-transform: uppercase; letter-spacing: .04em; }
+.comp-badge.target { background: #153538; color: var(--accent); border: 1px solid #2b6668; }
+.comp-badge.ref { background: #3b2815; color: #f3c97a; border: 1px solid #754f24; }
+.comp-slot-actions { display: flex; gap: 4px; flex-wrap: wrap; }
+.comp-slot-actions button { min-height: 26px; padding: 2px 8px; font-size: .72rem; border-radius: 8px; }
+.comp-slot-info { font: .72rem/1.45 var(--mono); color: #dbe5f5; overflow-wrap: anywhere; }
+.comp-picker-label { display: grid; gap: 3px; font-size: .74rem; color: var(--muted); }
+.comp-picker-label select { width: 100%; min-width: 0; font-size: .74rem; padding: 4px 6px; }
+.comp-flag-check { display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: .78rem; color: var(--muted); }
+.comp-assessment { margin: 10px 0 8px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); font-size: .78rem; line-height: 1.45; }
+.comp-assessment.ok { border-color: #3d6b66; background: #15302f; color: #c9f3ea; }
+.comp-assessment.warning { border-color: #7a5c28; background: #2c2110; color: #f6d99a; }
+.comp-assessment.reject { border-color: #82384b; background: #31141e; color: #ffb8c8; }
+.comp-assessment strong { display: block; margin-bottom: 3px; font-size: .84rem; }
+.comp-assessment ul { margin: 4px 0 0; padding-left: 16px; }
+.comp-figure { margin: 8px 0; }
+.comp-figure canvas { display: block; width: 100%; height: auto; border-radius: 8px; background: #0b111c; }
+.comp-figure figcaption { margin-top: 4px; color: var(--muted); font-size: .7rem; line-height: 1.45; }
+.comp-bins { display: grid; gap: 6px; margin: 8px 0; font-size: .75rem; }
+.comp-bins table, .comp-details table { width: 100%; border-collapse: collapse; font: .7rem var(--mono); }
+.comp-bins th, .comp-bins td, .comp-details th, .comp-details td { padding: 4px 5px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+.comp-bins th:first-child, .comp-bins td:first-child, .comp-details th:first-child, .comp-details td:first-child { text-align: left; }
+.comp-details { margin: 6px 0; }
+.comp-details summary { cursor: pointer; padding: 4px 0; font-size: .78rem; color: #c9d4e5; }
+.comp-assumptions { margin: 4px 0; padding-left: 16px; color: var(--muted); font-size: .72rem; line-height: 1.45; }
+.comp-assumptions li + li { margin-top: 3px; }
+
 /* Mover finder: header button, candidate card, and right-side movers list. */
 .pill-button { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 3px 12px 3px 9px; border-radius: 15px; border-color: #6a3f5e; background: #2a1726; color: #ffc4e7; font-size: .76rem; font-weight: 650; white-space: nowrap; }
 .pill-button:hover { border-color: #ff9ad5; }
