@@ -131,6 +131,15 @@ the repository secrets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and
 as it was. To deploy again without a change, run the workflow from the
 Actions tab.
 
+To run a copy on your own subscription (for example from a fork), open Azure
+Cloud Shell (Bash), clone the repository and run `bash deploy/azure-setup.sh`
+(set `GITHUB_REPO=owner/name` for a repository other than `ihfaz297/skyshift`).
+It creates the registry, app and GitHub identity, then prints the three
+secrets, the `AZURE_REGISTRY` repository variable the workflow reads, and the
+DNS records for a custom domain. Once those records resolve,
+`bash deploy/azure-domain.sh` connects the domain and its `www` subdomain with
+free, auto-renewing HTTPS certificates.
+
 The image is built on GitHub because Azure for Students subscriptions cannot
 run ACR Tasks, so `az containerapp up --source .` fails there with
 `TasksOperationsNotAllowed`. The app scales to zero when idle; during judging,
