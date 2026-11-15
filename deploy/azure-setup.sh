@@ -143,12 +143,26 @@ step "GitHub sign-in identity $IDENTITY"
 az identity create --name "$IDENTITY" --resource-group "$RG" --location "$LOCATION" --output none
 CLIENT_ID=$(q identity show --name "$IDENTITY" --resource-group "$RG" --query clientId)
 PRINCIPAL_ID=$(q identity show --name "$IDENTITY" --resource-group "$RG" --query principalId)
-if ! az identity federated-credential show --name github-main --identity-name "$IDENTITY" \
-  --resource-group "$RG" --output none 2>/dev/null; then
-  az identity federated-credential create --name github-main --identity-name "$IDENTITY" \
-    --resource-group "$RG" --issuer https://token.actions.githubusercontent.com \
-    --subject "repo:$GITHUB_REPO:ref:refs/heads/main" \
-    --audiences api://AzureADTokenExchange --output none
+# trust NAME SUBJECT: let GitHub Actions runs presenting SUBJECT sign in as the identity.
+trust() {
+  if ! az identity federated-credential show --name "$1" --identity-name "$IDENTITY" \
+    --resource-group "$RG" --output none 2>/dev/null; then
+    az identity federated-credential create --name "$1" --identity-name "$IDENTITY" \
+      --resource-group "$RG" --issuer https://token.actions.githubusercontent.com \
+      --subject "$2" --audiences api://AzureADTokenExchange --output none
+  fi
+}
+# GitHub names the repository either as owner/name or, for newer repositories, with
+# their immutable IDs (repo:owner@123/name@456:...). Trust both forms for main.
+trust github-main "repo:$GITHUB_REPO:ref:refs/heads/main"
+github_id() { curl -fsS "https://api.github.com/$1" 2>/dev/null | sed -n 's/^  "id": \([0-9]*\),$/\1/p' || true; }
+OWNER_ID=$(github_id "users/${GITHUB_REPO%%/*}")
+REPO_ID=$(github_id "repos/$GITHUB_REPO")
+if [ -n "$OWNER_ID" ] && [ -n "$REPO_ID" ]; then
+  trust github-main-ids "repo:${GITHUB_REPO%%/*}@$OWNER_ID/${GITHUB_REPO#*/}@$REPO_ID:ref:refs/heads/main"
+else
+  echo "Could not read the repository's GitHub IDs. If the deploy's Azure login fails"
+  echo "with AADSTS700213, run this script again."
 fi
 grant Contributor "$RG_ID" "$PRINCIPAL_ID"
 grant AcrPush "$ACR_ID" "$PRINCIPAL_ID"
