@@ -76,7 +76,33 @@ echo "$REGISTRY.azurecr.io"
 
 step "Container Apps environment $ENVIRONMENT (takes a few minutes)"
 if ! az containerapp env show --name "$ENVIRONMENT" --resource-group "$RG" --output none 2>/dev/null; then
-  az containerapp env create --name "$ENVIRONMENT" --resource-group "$RG" --location "$LOCATION" --output none
+  # Ask for a standard (workload profiles) environment: the CLI can otherwise make an
+  # "express" one, which supports neither custom domains nor system-assigned identities.
+  args=()
+  help=$(az containerapp env create --help 2>/dev/null || true)
+  if grep -q -- --environment-mode <<<"$help"; then
+    args+=(--environment-mode WorkloadProfiles)
+  fi
+  # Reuse the Log Analytics workspace an earlier attempt made instead of adding another.
+  WORKSPACE=$(q monitor log-analytics workspace list --resource-group "$RG" --query "[0].name")
+  if [ -n "$WORKSPACE" ]; then
+    args+=(--logs-workspace-id "$(q monitor log-analytics workspace show --resource-group "$RG" \
+      --workspace-name "$WORKSPACE" --query customerId)")
+    args+=(--logs-workspace-key "$(q monitor log-analytics workspace get-shared-keys --resource-group "$RG" \
+      --workspace-name "$WORKSPACE" --query primarySharedKey)")
+  fi
+  az containerapp env create --name "$ENVIRONMENT" --resource-group "$RG" --location "$LOCATION" \
+    "${args[@]}" --output none
+fi
+if [ "$(q containerapp env show --name "$ENVIRONMENT" --resource-group "$RG" --query properties.environmentMode)" = Express ]; then
+  trap - ERR
+  cat <<EOF
+$ENVIRONMENT is an "express" environment, which cannot have a custom domain or use
+the app's own identity to pull images. Delete it and its app, then run this again:
+  az containerapp delete --name $APP --resource-group $RG --yes
+  az containerapp env delete --name $ENVIRONMENT --resource-group $RG --yes
+EOF
+  exit 1
 fi
 
 step "Container app $APP"
