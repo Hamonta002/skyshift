@@ -23,17 +23,20 @@ The browser also needs direct cross-origin range access to the public SPHEREx
 S3 bucket for image pixels. Deploying this application publicly requires a host
 that runs the search route and verification of cross-origin access.
 
-The viewer is a full-screen sky map. It opens on WISE 0855 at 8 screen pixels per image pixel. Drag to pan, and scroll or pinch to zoom. Click any point for its coordinates and pixel value, and press `?` for keyboard shortcuts. Moving the map never replaces the loaded data; use **Search this area** to load a new field. The search box takes
+The viewer is a full-screen sky map. It opens on WISE 0855 at 8 screen pixels per image pixel. Drag to pan, and scroll or pinch to zoom. Click any point for its coordinates and pixel value. The `?` button opens a short guide with the keyboard shortcuts. On phones the timeline starts compact; its arrow shows the thumbnails and the A/B choices. Moving the map never replaces the loaded data; use **Search this area** to load a new field. The search box takes
 the name of any star, galaxy or nebula (for example Betelgeuse or M42), or RA and Dec. Names are looked up on the
 server through CDS Sesame and moved to the current date with their proper motion; SIMBAD supplies the object type
 shown in the panel, and shared links keep the name. Coordinates may be decimal degrees or complete sexagesimal RA and declination,
-with the detector band, field of view and dates under search options. The example chips open a bundled example
+with the field size and dates under search options; changing them and pressing Enter searches the current field again.
+The infrared band is chosen in **Layers**: changing it reloads the field, and new searches use it. While a live search
+runs, the map moves to the requested place and outlines it with the download progress. The example chips open a bundled example
 directly, with a one-line hint on what to look for; an example that is not bundled in the build is fetched through
 the live search. All five examples are bundled for offline use. The live path queries IRSA for observations,
 downloads a bounded sample, and computes visit stacks locally. It includes
 individual exposures, visual sum/difference, centre-wavelength filtering, a preliminary
-spectrum, shareable coordinates, and JSON metadata export. Nominal channel centres
-can be loaded from IRSA on demand; adjacent midpoints are only approximate boundaries. Optional Gaia DR3 and
+spectrum, shareable coordinates, and JSON metadata export. Opening **Narrow wavelength** in the panel loads the
+nominal channels of the current band from IRSA, and choosing one applies it; adjacent midpoints are only approximate
+boundaries. Optional Gaia DR3 and
 CatWISE2020 catalogue overlays use read-only server queries. A flag decoder accepts
 a numeric value supplied by the user. The optional flag inspector can also read a
 3 × 3 FLAGS cutout for the first exposure in the current frame. It requires Astropy
@@ -43,8 +46,13 @@ does not represent the quality of the entire stack. Add `embed=1` to the URL for
 Observation searches are cached in server memory. Inputs and results are cached
 in the browser where IndexedDB is available; the browser can continue without a
 working persistent cache. Search collections and band ranges are configured in
-`config/archive.json`. New releases require checking their product layout and
-adding their collection names; this does not change the numerical kernel.
+`config/archive.json`. New releases are also found automatically: every 12 hours the
+server lists the top-level folders of the public SPHEREx bucket, and a release newer
+than the configured ones of its kind (for example `qr4/` after `qr3`, or `dr2/`) that
+has the usual `level2/` image folder is searched as well. Its failures never block a
+search. The panel shows the newest image, when the archive was checked and which
+releases answered; a saved example quietly asks the archive whether newer images
+exist and offers to load them.
 
 ## Discover and identify
 
@@ -63,12 +71,12 @@ adding their collection names; this does not change the numerical kernel.
   candidate", lists what it was based on. Verdicts are rules of thumb, so
   confirm them with Blink. Saturated cores are located from their masked
   pixels, and their brightness is a lower limit.
-- **Reports**: *Copy report link* reopens the view with the object tracked
-  (`mark=ra,dec`). *Download report* saves the positions, motion, brightness
-  and catalogue matches as JSON.
-- **Colour composite** (place panel) fetches two more detector bands and shows
-  three bands stacked over all visits, with the longest wavelength in red. Each
-  extra band is about 20–25 MB.
+- **Reports**: *Share* copies a link that reopens the view with the object
+  tracked (`mark=ra,dec`). *Download report* saves the positions, motion,
+  brightness and catalogue matches as JSON.
+- **Colour** (a switch in Layers; choose the bands in the panel) fetches two
+  more detector bands and shows three bands stacked over all visits, with the
+  longest wavelength in red. Each extra band is about 20–25 MB.
 
 Brightness changes between visits can be partly spectral, because SPHEREx
 samples different wavelengths within a band on each visit. Identification and
