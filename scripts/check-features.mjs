@@ -14,6 +14,39 @@ assert.equal(filtered.fixture.headers.length, filtered.fixture.visitSizes.reduce
 assert.equal(sky.decodeFixture(filtered.fixture).length, filtered.fixture.headers.length);
 for (const h of filtered.fixture.headers) assert.ok(h.wavelength + h.bandwidth / 2 >= 4.41 && h.wavelength - h.bandwidth / 2 <= 4.55);
 await assert.rejects(() => sky.filterWavelength(fixture, 4.9, 4.8, new AbortController().signal));
+
+// A moving source needs a new aperture centre in the second visit.
+const size = 65, centre = 32, scale = 6.15 / 3600;
+const positions = [{ ra: 30, dec: 0 }, { ra: 30 + 16 * scale, dec: 0 }];
+const samples = [
+  { x: centre, excess: 21, wavelength: 4.42 },
+  { x: centre + 16, excess: 42, wavelength: 4.50 },
+  { x: centre + 16, excess: 63, wavelength: 4.65 },
+];
+const pixels = Buffer.alloc(samples.length * size ** 2 * 4);
+const headers = samples.map(({ x, excess, wavelength }, exposure) => {
+  for (let i = 0; i < size ** 2; i++) pixels.writeFloatLE(5, 4 * (exposure * size ** 2 + i));
+  pixels.writeFloatLE(5 + excess, 4 * (exposure * size ** 2 + centre * size + x));
+  return {
+    size, x0: 0, y0: 0, crval: [30, 0], crpix: [centre + 1, centre + 1],
+    pc: [1, 0, 0, 1], cdelt: [scale, scale], a: {}, b: {}, ap: {}, bp: {},
+    wavelength, bandwidth: 0.04,
+  };
+});
+const movingFixture = {
+  ...fixture, ra0: 30, dec0: 0, dates: ['First', 'Second'],
+  visitSizes: [1, 2], headers, pixels: pixels.toString('base64'),
+};
+const signal = new AbortController().signal;
+const fixed = await sky.quickSpectrum(movingFixture, signal, positions[0]);
+assert.deepEqual(fixed.map((point) => point.surfaceBrightness), [1, 0, 0]);
+const moving = await sky.quickSpectrum(movingFixture, signal, (visit) => positions[visit]);
+assert.deepEqual(moving.map((point) => point.surfaceBrightness), [1, 2, 3]);
+assert.ok(moving.every((point) => point.wavelengthAtReferencePosition));
+assert.ok(Math.abs(moving[1].flux - 42 * 37.86 * (Math.PI / 648000) ** 2 * 1e6) < 1e-12);
+const missing = await sky.quickSpectrum(movingFixture, signal, (visit, exposure) => exposure === 1 ? undefined : positions[visit]);
+assert.deepEqual(missing.map((point) => point.surfaceBrightness), [1, 3]);
+
 assert.deepEqual(sky.decodeQualityFlags((1 << 1) + (1 << 21)), ['OVERFLOW (near saturation)', 'SOURCE (known source)']);
 assert.deepEqual(sky.decodeQualityFlags(1 << 3), ['Unknown bit 3']);
 assert.throws(() => sky.decodeQualityFlags(-1));

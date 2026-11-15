@@ -35,9 +35,14 @@ namespace SkyShift {
     for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
     return { fixture: { ...fixture, id: `${fixture.id}:wave:${min}:${max}`, dates, visitSizes, headers: selected.map((item) => item.header), pixels: btoa(binary) }, unavailable };
   }
-  export interface SpectrumPoint { wavelength: number; bandwidth: number; flux: number; date: string; mjd: number | null; productKey: string | null; }
+  export interface SpectrumPoint {
+    wavelength: number; bandwidth: number; flux: number; surfaceBrightness: number;
+    date: string; mjd: number | null; productKey: string | null; wavelengthAtReferencePosition: boolean;
+  }
+  type SpectrumPosition = { ra: number; dec: number };
+  export type SpectrumTarget = SpectrumPosition | ((visit: number, exposure: number) => SpectrumPosition | undefined);
 
-  export async function quickSpectrum(fixture: PackedFixture, signal: AbortSignal): Promise<SpectrumPoint[]> {
+  export async function quickSpectrum(fixture: PackedFixture, signal: AbortSignal, target?: SpectrumTarget): Promise<SpectrumPoint[]> {
     const exposures = decodeFixture(fixture);
     const result: SpectrumPoint[] = [];
     let index = 0;
@@ -45,17 +50,20 @@ namespace SkyShift {
       for (let i = 0; i < fixture.visitSizes[visit]; i++, index++) {
         if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
         const exposure = exposures[index], h = exposure.header;
-        let ra = fixture.ra0, dec = fixture.dec0;
-        if (Math.abs(ra - 133.759765) < 1e-5 && Math.abs(dec + 7.242186) < 1e-5 && h.mjd !== undefined) {
+        const position = typeof target === "function" ? target(visit, index) : target;
+        if (target && !position) continue;
+        let ra = position?.ra ?? fixture.ra0, dec = position?.dec ?? fixture.dec0;
+        if (!target && Math.abs(ra - 133.759765) < 1e-5 && Math.abs(dec + 7.242186) < 1e-5 && h.mjd !== undefined) {
           const year = 2000 + (h.mjd - 51544.5) / 365.25;
           ra += (year - 2026) * -8123.7 / 3600000 / Math.cos(dec * Math.PI / 180);
           dec += (year - 2026) * 673.2 / 3600000;
         }
         const [x, y] = worldToPixel(exposure.wcs, ra, dec);
         const cx = x - h.x0, cy = y - h.y0;
+        if (!(cx >= 14 && cy >= 14 && cx < h.size - 14 && cy < h.size - 14)) continue;
         const sky: number[] = [], aperture: number[] = [];
         let incomplete = false;
-        for (let py = 0; py < h.size; py++) for (let px = 0; px < h.size; px++) {
+        for (let py = Math.ceil(cy - 14); py <= cy + 14; py++) for (let px = Math.ceil(cx - 14); px <= cx + 14; px++) {
           const radius = Math.hypot(px - cx, py - cy);
           const value = exposure.pixels[py * h.size + px];
           if (radius <= 2.5) {
@@ -63,16 +71,20 @@ namespace SkyShift {
             else aperture.push(value);
           } else if (radius > 8 && radius < 14 && Number.isFinite(value)) sky.push(value);
         }
-        if (incomplete || aperture.length < 10 || sky.length < 30 || cx < 14 || cy < 14 || cx >= h.size - 14 || cy >= h.size - 14) continue;
+        if (incomplete || aperture.length < 10 || sky.length < 30) continue;
         sky.sort((a, b) => a - b);
         const background = sky[Math.floor(sky.length / 2)];
         let wavelength: number, bandwidth: number;
         try { [wavelength, bandwidth] = await fetchWavelength(h, x, y, signal); }
         catch (error) { if (signal.aborted) throw error; continue; }
-        if (!Number.isFinite(wavelength)) continue;
+        if (!Number.isFinite(wavelength) || !Number.isFinite(bandwidth) || bandwidth <= 0) continue;
         const solidAngle = 37.86 * (Math.PI / 648000) ** 2;
-        const flux = aperture.reduce((sum, value) => sum + value - background, 0) * solidAngle * 1e6;
-        result.push({ wavelength, bandwidth, flux, date: fixture.dates[visit], mjd: h.mjd ?? null, productKey: h.productKey ?? null });
+        const signalSum = aperture.reduce((sum, value) => sum + (value - background), 0);
+        result.push({
+          wavelength, bandwidth, flux: signalSum * solidAngle * 1e6, surfaceBrightness: signalSum / aperture.length,
+          date: fixture.dates[visit], mjd: h.mjd ?? null, productKey: h.productKey ?? null,
+          wavelengthAtReferencePosition: h.wavelength !== undefined && h.bandwidth !== undefined,
+        });
       }
     }
     return result.sort((a, b) => a.wavelength - b.wavelength);
