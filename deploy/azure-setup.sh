@@ -104,6 +104,25 @@ the app's own identity to pull images. Delete it and its app, then run this agai
 EOF
   exit 1
 fi
+# The create command can return while the environment is still being built; wait for it.
+printf 'Waiting for the environment to be ready'
+for attempt in $(seq 1 90); do
+  state=$(q containerapp env show --name "$ENVIRONMENT" --resource-group "$RG" --query properties.provisioningState)
+  case "$state" in
+    Succeeded) echo " ready"; break ;;
+    Failed | Canceled | UpgradeFailed | ScheduledForDelete)
+      trap - ERR
+      echo; echo "Azure reports the environment as $state. Delete it and run this again:"
+      echo "  az containerapp env delete --name $ENVIRONMENT --resource-group $RG --yes"
+      exit 1 ;;
+  esac
+  if [ "$attempt" = 90 ]; then
+    trap - ERR
+    echo; echo "Still $state after 30 minutes. Run this script again later; it picks up from here."
+    exit 1
+  fi
+  printf '.'; sleep 20
+done
 
 step "Container app $APP"
 if ! az containerapp show --name "$APP" --resource-group "$RG" --output none 2>/dev/null; then
