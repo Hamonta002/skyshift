@@ -1653,6 +1653,7 @@ declare const ASSETS: {
     pause();
     candidates = [];
     candidateNames.clear();
+    candidateLookups.clear();
     if (modeSelect.value === "blink") frame = Number(referenceSelect.value);
     updateVisitBadges();
     commitView();
@@ -1696,6 +1697,7 @@ declare const ASSETS: {
     objectSection.hidden = true;
     candidates = []; candidateCard.hidden = true;
     candidateNames.clear();
+    candidateLookups.clear();
     updateMoversPanel();
     colour = null; showColour = false;
     get("colour-status").textContent = "";
@@ -1976,18 +1978,18 @@ declare const ASSETS: {
         }
       }
       // The ring follows the visible frame; hidden while blinking so it adds no motion of its own.
-      const current = pts.find(({ p }) => p.frame === frame) ?? pts[0];
+      const current = pts.find(({ p }) => p.frame === frame);
       if (current && playback !== "blink" && !arithmeticView()) {
         ctx.strokeStyle = "#a6e8dc"; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.arc(current.s[0], current.s[1], Math.max(10, 1.9 * pixelPx), 0, 2 * Math.PI); ctx.stroke();
       }
-      // Render tracked object's name badge above the star
-      if (current) {
+      // Name badge above the tracked source (current frame, or its first detection).
+      const badgeAt = current ?? pts[0];
+      if (badgeAt && playback !== "blink") {
         const objName = tracked.id?.skybot.matches?.[0]?.name
           || tracked.id?.simbad.matches?.[0]?.name
           || tracked.id?.gaia.matches?.[0]?.name
-          || (selected?.label)
-          || (SkyShift.findTargetAt(tracked.start.ra, tracked.start.dec, 0.03, current.p.mjd ?? undefined)?.label)
+          || (SkyShift.findTargetAt(tracked.start.ra, tracked.start.dec, 0.03, badgeAt.p.mjd ?? undefined)?.label)
           || (SkyShift.separation(tracked.start.ra, tracked.start.dec, fixture.ra0, fixture.dec0) < 25 && currentTargetId
             ? SkyShift.TARGETS.find((t) => t.id === currentTargetId)?.label
             : undefined)
@@ -1996,8 +1998,8 @@ declare const ASSETS: {
         const r = Math.max(10, 1.9 * pixelPx);
         ctx.font = "bold 11px system-ui, sans-serif";
         const tw = ctx.measureText(objName).width;
-        const bx = current.s[0];
-        const by = current.s[1] - r - 8;
+        const bx = badgeAt.s[0];
+        const by = badgeAt.s[1] - r - 8;
 
         ctx.fillStyle = "rgba(10, 16, 28, 0.9)";
         ctx.fillRect(bx - tw / 2 - 5, by - 10, tw + 10, 15);
@@ -2043,6 +2045,7 @@ declare const ASSETS: {
   // Mover finder & right-side candidates list
   let moverFilter: "all" | "mover" | "variable" = "all";
   const candidateNames = new Map<string, string>();
+  const candidateLookups = new Set<string>();
 
   function candidateCoordKey(c: SkyShift.MoverCandidate): string {
     return `${c.x.toFixed(1)},${c.y.toFixed(1)}`;
@@ -2071,12 +2074,16 @@ declare const ASSETS: {
       }
     }
 
-    // 3. Check loaded catalogues (Gaia / CatWISE)
+    // 3. Check loaded catalogues (Gaia / CatWISE), propagated to the frame epoch
+    const candMjd = frameMjd();
+    const candYear = candMjd === undefined ? null : SkyShift.mjdToJulianYear(candMjd);
     for (const catName of ["gaia", "wise"] as const) {
       for (const src of catalogues[catName] ?? []) {
-        if (SkyShift.separation(ra, dec, src.ra, src.dec) <= 5) {
-          candidateNames.set(key, src.id);
-          return src.id;
+        const [sra, sdec] = SkyShift.cataloguePosition(src, candYear);
+        if (SkyShift.separation(ra, dec, sra, sdec) <= 5) {
+          const label = `${catName === "wise" ? "CatWISE2020" : "Gaia DR3"} ${src.id}`;
+          candidateNames.set(key, label);
+          return label;
         }
       }
     }
@@ -2090,6 +2097,9 @@ declare const ASSETS: {
 
   async function fetchCandidateIdentity(c: SkyShift.MoverCandidate): Promise<void> {
     const key = candidateCoordKey(c);
+    // resolveCandidateName runs on every render; query each position once.
+    if (candidateLookups.has(key)) return;
+    candidateLookups.add(key);
     const [ra, dec] = SkyShift.gridToSky(fixture, c.x, c.y);
     const mjd = frameMjd() ?? 61000;
     try {
