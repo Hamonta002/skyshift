@@ -108,16 +108,27 @@ default is `127.0.0.1:4173` for local use. The browser reads image pixels
 directly from the public SPHEREx S3 bucket, which allows cross-origin range
 requests.
 
-On Azure Container Apps, `az containerapp up` builds the image from the
-`Dockerfile` in the cloud and gives it a public HTTPS address:
+The public site runs on Azure Container Apps (Japan East):
+<https://skyshift.yellowsea-43436967.japaneast.azurecontainerapps.io/>.
+Every push to `main` deploys itself through `.github/workflows/deploy.yml`:
+GitHub runs `npm test`, builds the image, pushes it to the `ca361b59b371acr`
+registry and points the `skyshift` app at it. GitHub signs in to Azure with
+OpenID Connect as the `skyshift-github` managed identity, which trusts only
+`main` of this repository and can only manage the `skyshift` resource group;
+the repository secrets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and
+`AZURE_SUBSCRIPTION_ID` hold its IDs. A failed test or build leaves the site
+as it was. To deploy again without a change, run the workflow from the
+Actions tab.
+
+The image is built on GitHub because Azure for Students subscriptions cannot
+run ACR Tasks, so `az containerapp up --source .` fails there with
+`TasksOperationsNotAllowed`. The app scales to zero when idle; during judging,
+keep one copy running so the first visitor does not wait for it to start:
 
 ```sh
-az login
-az extension add --name containerapp --upgrade
-az containerapp up --name skyshift --resource-group skyshift --location westeurope \
-  --source . --ingress external --target-port 8080
-# Keep one copy running so the first visitor does not wait for a cold start.
 az containerapp update --name skyshift --resource-group skyshift --min-replicas 1
+# Afterwards, back to zero cost when idle:
+az containerapp update --name skyshift --resource-group skyshift --min-replicas 0
 ```
 
 On Azure App Service (Web App for Containers), set the app setting
