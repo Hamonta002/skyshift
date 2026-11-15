@@ -1195,7 +1195,8 @@ declare const ASSETS: {
       closeQuickSpectrum();
       rebuildVisits();
       commitView();
-      previewMovers();
+      // Search for movers once the new field has been drawn.
+      window.setTimeout(previewMovers, 30);
       const source = {
         miss: "Computed from exposures",
         inputs: "Rebuilt from cached exposures",
@@ -1490,14 +1491,10 @@ declare const ASSETS: {
     }
     referenceSelect.dataset.previous = referenceSelect.value;
     comparisonSelect.dataset.previous = comparisonSelect.value;
-    if (candidates.length) {
-      if (spectrumOpener?.id === "candidate-spectrum") closeQuickSpectrum();
-      closeCandidates();
-    }
+    if (spectrumOpener?.id === "candidate-spectrum") closeQuickSpectrum();
     if (modeSelect.value === "blink") frame = Number(referenceSelect.value);
     updateVisitBadges();
     commitView();
-    previewMovers();
   });
   for (const input of stretchInputs) input.addEventListener("change", () => {
     pause();
@@ -1744,29 +1741,37 @@ declare const ASSETS: {
     });
   }
 
-  // Mover finder: sources that moved or changed between A and B.
+  // Mover finder: sources that moved or changed across all visits. It does
+  // not depend on A and B, so it runs once per loaded field.
+  let moverSearch: { series: SkyShift.AlignedSeries; found: SkyShift.MoverCandidate[] } | null = null;
+  function searchMovers(): SkyShift.MoverCandidate[] | null {
+    if (!series || series.frames.length < 2 || modeSelect.value === "exposures") return null;
+    if (moverSearch?.series !== series) moverSearch = { series, found: SkyShift.findMovers(series.frames, series.side, frameMjds(), series.counts) };
+    return moverSearch.found;
+  }
   function findMoversNow(): void {
     if (busy || !series) return;
-    if (!canCompare() || modeSelect.value === "exposures") {
-      status.textContent = "Choose two different visits as A and B, in the visit-stack view, to look for movers.";
+    const found = searchMovers();
+    if (!found) {
+      status.textContent = series.frames.length < 2 ? "Finding movers needs at least two visits." : "Switch the view to visits (not single images) to look for movers.";
       return;
     }
     enableCataloguesForDiscovery();
     pause();
     colourOff();
     dismissHint();
-    const a = Number(referenceSelect.value), b = Number(comparisonSelect.value);
-    candidates = SkyShift.findMovers(series.frames[a], series.frames[b], series.side);
+    candidates = found;
+    const across = `across the ${series.frames.length} visits`;
     if (!candidates.length) {
       candidateCard.hidden = true;
-      status.textContent = `Nothing clearly moved or changed between ${labelFor(a)} and ${labelFor(b)}.`;
+      status.textContent = `Nothing clearly moved or changed ${across}.`;
       render();
       return;
     }
     hideHere();
     candidateIndex = 0;
     showCandidate();
-    status.textContent = `Found ${findingsText(candidates)} between A and B.`;
+    status.textContent = `Found ${findingsText(candidates)} ${across}. A and B show the two visits that compare it best.`;
   }
   /** "1 possible moving object and 2 brightness changes", leaving out zero counts. */
   function findingsText(found: SkyShift.MoverCandidate[]): string {
@@ -1780,30 +1785,45 @@ declare const ASSETS: {
     return score >= 20 ? "very strong signal" : score >= 10 ? "strong signal" : score >= 6 ? "clear signal" : "faint signal, check it by eye";
   }
   /**
-   * Runs the mover finder quietly whenever A and B are ready, so the button can
+   * Runs the mover finder quietly once a field is loaded, so the button can
    * say what it found before anyone presses it.
    */
   const findMoversButton = get<HTMLButtonElement>("find-movers"), findMoversLabel = get("find-movers-label");
   function previewMovers(): void {
-    const ready = !!series && canCompare() && modeSelect.value !== "exposures";
-    const found = ready ? SkyShift.findMovers(series!.frames[Number(referenceSelect.value)], series!.frames[Number(comparisonSelect.value)], series!.side) : [];
-    const movers = found.filter((c) => c.kind === "mover").length, changes = found.length - movers;
+    const found = searchMovers();
+    const movers = found?.filter((c) => c.kind === "mover").length ?? 0, changes = (found?.length ?? 0) - movers;
     findMoversLabel.textContent = movers ? `${movers} possible mover${movers === 1 ? "" : "s"}`
-      : changes ? `${changes} brightness change${changes === 1 ? "" : "s"}` : ready ? "Nothing moved" : "Find movers";
-    findMoversButton.classList.toggle("found", found.length > 0);
-    findMoversButton.title = found.length ? `Show the ${findingsText(found)} found between A and B (F)`
-      : "Look for sources that moved or changed between A and B (F)";
+      : changes ? `${changes} brightness change${changes === 1 ? "" : "s"}` : found ? "Nothing moved" : "Find movers";
+    findMoversButton.classList.toggle("found", !!found?.length);
+    findMoversButton.title = found?.length ? `Show the ${findingsText(found)} found across the visits (F)`
+      : "Look for sources that moved or changed across the visits (F)";
+  }
+  /** Puts the two visits that show a candidate best into A and B. */
+  function showPair([a, b]: [number, number]): void {
+    if (Number(referenceSelect.value) === a && Number(comparisonSelect.value) === b) return;
+    referenceSelect.value = String(a);
+    comparisonSelect.value = String(b);
+    referenceSelect.dataset.previous = referenceSelect.value;
+    comparisonSelect.dataset.previous = comparisonSelect.value;
+    if (modeSelect.value === "blink") frame = a;
+    updateVisitBadges();
+    commitView();
   }
   function showCandidate(): void {
     const c = candidates[candidateIndex];
     if (!c) return;
     candidateCard.hidden = false;
-    const a = Number(referenceSelect.value), b = Number(comparisonSelect.value);
-    get("candidate-title").textContent = `${c.kind === "mover" ? "Possible moving object" : c.kind === "brighter" ? "Got brighter" : "Got fainter"} · ${candidateIndex + 1} of ${candidates.length}`;
-    const detail = get("candidate-detail");
+    showPair(c.frames);
+    const [a, b] = c.frames;
+    const what = c.kind === "mover" ? "Possible moving object"
+      : c.single ? (c.kind === "brighter" ? "Appeared" : "Disappeared") : c.kind === "brighter" ? "Got brighter" : "Got fainter";
+    get("candidate-title").textContent = `${what} · ${candidateIndex + 1} of ${candidates.length}`;
+    const detail = get("candidate-detail"), factor = 10 ** (0.4 * Math.abs(c.change));
     detail.textContent = c.kind === "mover"
-      ? `Moved ${(c.shift * fixture.scale).toFixed(1)}″ between ${labelFor(a)} and ${labelFor(b)} · ${strengthText(c.score)}`
-      : `Changed brightness between ${labelFor(a)} and ${labelFor(b)} without moving · ${strengthText(c.score)}`;
+      ? `Moves ${(c.speed * fixture.scale).toFixed(1)}″ a year, ${(c.shift * fixture.scale).toFixed(1)}″ between ${labelFor(a)} and ${labelFor(b)} · ${strengthText(c.score)}`
+      : c.single
+        ? `Seen in ${labelFor(c.kind === "brighter" ? b : a)} but not in ${labelFor(c.kind === "brighter" ? a : b)}: perhaps an asteroid or an image artefact · ${strengthText(c.score)}`
+        : `${factor >= 10 ? factor.toFixed(0) : factor.toFixed(1)}× ${c.kind === "brighter" ? "brighter" : "fainter"} in ${labelFor(b)} than in ${labelFor(a)}, without moving${c.saturated ? " (too bright to measure exactly)" : ""} · ${strengthText(c.score)}`;
     detail.title = c.score >= 1000 ? "Signal-to-noise over 1000" : `Signal-to-noise ${c.score.toFixed(0)}`;
     for (const id of ["candidate-prev", "candidate-next"]) get<HTMLButtonElement>(id).disabled = candidates.length < 2;
     // Bring it into view, zoomed in enough to judge it by eye.

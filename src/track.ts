@@ -3,7 +3,7 @@ namespace SkyShift {
   // aligned grids. Grid pixels are zero-based with x increasing west and y
   // increasing north, as produced by the alignment kernel.
 
-  export interface Measurement { x: number; y: number; flux: number; snr: number; peak: number; height: number; saturated?: boolean }
+  export interface Measurement { x: number; y: number; flux: number; snr: number; peak: number; height: number; saturated?: boolean; masked?: number }
   export interface TrackPoint extends Measurement { frame: number; ra: number; dec: number; mjd: number | null }
   export interface Motion {
     east: number; north: number; total: number; error: number; angle: number;
@@ -14,9 +14,13 @@ namespace SkyShift {
   const PSF_ARCSEC = 6.2; // Approximate SPHEREx image quality, used for centroid errors.
 
   function median(values: number[]): number {
-    const sorted = [...values].sort((a, b) => a - b);
+    const sorted = Float64Array.from(values).sort();
     const mid = sorted.length >> 1;
     return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+  /** Robust standard deviation (scaled median absolute deviation). */
+  function spread(values: number[], centre = median(values)): number {
+    return median(values.map((value) => Math.abs(value - centre))) * 1.4826;
   }
 
   /** Grid pixel to sky position, the inverse of `fieldPixel`. */
@@ -83,7 +87,7 @@ namespace SkyShift {
           if (Number.isFinite(value)) { flux += value - sky.background; count++; }
         }
         return { x: cx, y: cy, flux, snr: flux / (sky.noise * Math.sqrt(Math.max(count, 1))), peak: (best - sky.background) / sky.noise,
-          height: best - sky.background, saturated: true };
+          height: best - sky.background, saturated: true, masked: hole.length };
       }
     }
     const local = stats(px, py, 5, 9);
@@ -189,70 +193,347 @@ namespace SkyShift {
 
   export interface MoverCandidate {
     kind: "mover" | "brighter" | "fainter";
+    /** Grid position, and where it was in the earlier and later of `frames`. */
     x: number; y: number; from: [number, number]; to: [number, number];
-    score: number; shift: number; relative: number;
+    /** Significance in standard deviations, after allowing for the field's own scatter. */
+    score: number;
+    /** Grid pixels moved between the two visits in `frames`. */
+    shift: number;
+    /** The two visits that show it best, earlier first. */
+    frames: [number, number];
+    /** Motion in grid pixels per year (movers only). */
+    speed: number;
+    /** Magnitudes from the earlier to the later visit in `frames`; negative is brighter. */
+    change: number;
+    /** Visits it was measured in. */
+    visits: number;
+    /** Seen in one visit only: it appeared or vanished. */
+    single: boolean;
+    /** Too bright to measure: the brightness is a lower limit. */
+    saturated: boolean;
+  }
+
+  const EDGE = 6;
+  const CENTROID = 1.2; // Centroid error × S/N for this PSF, in grid pixels.
+  // A mover must cross about one image width (6″). Smaller shifts also come
+  // from blends and from the PSF changing between visits, and are hard to see.
+  const MIN_SHIFT = 2;
+
+  /** Background-subtracted flux in a fixed aperture, or null without full coverage. */
+  function aperture(pixels: Float32Array, side: number, x: number, y: number): { flux: number; error: number } | null {
+    const cx = Math.round(x), cy = Math.round(y), ring: number[] = [];
+    let flux = 0, count = 0;
+    for (let dy = -9; dy <= 9; dy++) for (let dx = -9; dx <= 9; dx++) {
+      const px = cx + dx, py = cy + dy, r = Math.hypot(px - x, py - y);
+      const inside = px >= 0 && py >= 0 && px < side && py < side;
+      if (r <= 2.5) {
+        const value = inside ? pixels[py * side + px] : NaN;
+        if (!Number.isFinite(value)) return null;
+        flux += value; count++;
+      } else if (inside && r >= 5 && r <= 9 && Number.isFinite(pixels[py * side + px])) ring.push(pixels[py * side + px]);
+    }
+    if (ring.length < 12) return null;
+    const background = median(ring);
+    return { flux: flux - background * count, error: Math.max(spread(ring, background), 1e-12) * Math.sqrt(count) };
+  }
+
+  /** Sources in a frame: peaks of a lightly smoothed copy, measured on the original. */
+  function detectSources(pixels: Float32Array, side: number, threshold: number, limit: number): Measurement[] {
+    const kernel = [1, 2, 1, 2, 4, 2, 1, 2, 1];
+    const smooth = new Float32Array(pixels.length).fill(NaN), values: number[] = [];
+    for (let y = 1; y < side - 1; y++) for (let x = 1; x < side - 1; x++) {
+      let sum = 0, weight = 0;
+      for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
+        const value = pixels[(y + j) * side + x + i];
+        if (Number.isFinite(value)) { const w = kernel[(j + 1) * 3 + i + 1]; sum += w * value; weight += w; }
+      }
+      if (weight >= 8) { smooth[y * side + x] = sum / weight; values.push(sum / weight); }
+    }
+    if (values.length < 50) return [];
+    // The background level and noise of an evenly spread sample of 20,000 pixels.
+    const step = Math.max(1, Math.floor(values.length / 20000));
+    const sample = step > 1 ? values.filter((_, i) => i % step === 0) : values;
+    const level = median(sample), sigma = Math.max(spread(sample, level), 1e-12);
+    const peaks: [number, number, number][] = [];
+    for (let y = EDGE; y < side - EDGE; y++) for (let x = EDGE; x < side - EDGE; x++) {
+      const value = smooth[y * side + x];
+      if (!(value - level >= threshold * sigma)) continue;
+      let top = true;
+      for (let j = -1; j <= 1 && top; j++) for (let i = -1; i <= 1; i++) {
+        if ((i || j) && smooth[(y + j) * side + x + i] > value) { top = false; break; }
+      }
+      if (top) peaks.push([x, y, value]);
+    }
+    // Brightest first; a masked saturated core is found from the peaks on its rim.
+    peaks.sort((p, q) => q[2] - p[2]);
+    const found: Measurement[] = [];
+    for (const [x, y] of peaks.slice(0, 3 * limit)) {
+      const m = measureSource(pixels, side, x, y, 1.5);
+      if (!m || m.snr < 5 || m.peak < 3 || m.flux <= 0 || found.some((s) => Math.hypot(s.x - m.x, s.y - m.y) < 2)) continue;
+      found.push(m);
+      if (found.length >= limit) break;
+    }
+    return found;
   }
 
   /**
-   * Looks for the signature of a moving source in B − A: a negative residual
-   * where it was in A next to a positive one where it is in B, of similar
-   * amplitude and a sizeable fraction of the source's own peak (which rejects
-   * small misregistration of bright stars). Strong unpaired residuals are
-   * reported as brightness changes.
+   * The source at the brightest pixel within `radius` of (x, y), ignoring
+   * pixels within 2 px of `avoid` (sources already claimed), so that a faint
+   * source does not jump to a brighter neighbour.
    */
-  export function findMovers(a: Float32Array, b: Float32Array, side: number, options = { threshold: 5, maxShift: 8 }): MoverCandidate[] {
-    const d = combineFrames(a, b, "difference");
-    const finite = Array.from(d).filter(Number.isFinite);
-    if (finite.length < 50) return [];
-    const centre = median(finite);
-    const sigma = Math.max(median(finite.map((v) => Math.abs(v - centre))) * 1.4826, 1e-12);
-    const extrema: { x: number; y: number; v: number }[] = [];
-    for (let y = 3; y < side - 3; y++) for (let x = 3; x < side - 3; x++) {
-      const v = d[y * side + x] - centre;
-      if (!Number.isFinite(v) || Math.abs(v) < options.threshold * sigma) continue;
-      let extreme = true;
-      for (let dy = -1; dy <= 1 && extreme; dy++) for (let dx = -1; dx <= 1; dx++) {
-        const n = d[(y + dy) * side + x + dx] - centre;
-        if (!Number.isFinite(n)) { extreme = false; break; }
-        if ((dx || dy) && (v > 0 ? n > v : n < v)) { extreme = false; break; }
+  function claimSource(pixels: Float32Array, side: number, x: number, y: number, radius: number, avoid: [number, number][]): Measurement | null {
+    let best = -Infinity, bx = -1, by = -1;
+    // A masked saturated core can fill the whole radius: widen it to reach the bright rim.
+    for (let r = radius; bx < 0 && r <= radius + 6; r += 3) {
+      const near = avoid.filter(([ax, ay]) => Math.hypot(ax - x, ay - y) < r + 2);
+      for (let py = Math.max(0, Math.floor(y - r)); py <= Math.min(side - 1, Math.ceil(y + r)); py++) {
+        for (let px = Math.max(0, Math.floor(x - r)); px <= Math.min(side - 1, Math.ceil(x + r)); px++) {
+          const value = pixels[py * side + px];
+          if (!(value > best) || Math.hypot(px - x, py - y) > r || near.some(([ax, ay]) => Math.hypot(px - ax, py - ay) < 2)) continue;
+          best = value; bx = px; by = py;
+        }
       }
-      if (extreme) extrema.push({ x, y, v });
+      if (bx >= 0 && r > radius && !measureSource(pixels, side, bx, by, 0.5)?.saturated) bx = -1;
     }
-    extrema.sort((p, q) => Math.abs(q.v) - Math.abs(p.v));
-    const positives = extrema.filter((e) => e.v > 0).slice(0, 200), negatives = extrema.filter((e) => e.v < 0).slice(0, 200);
-    const used = new Set<typeof negatives[number]>();
-    const sourcePeak = (pixels: Float32Array, x: number, y: number) => measureSource(pixels, side, x, y, 1.5);
+    if (bx < 0) return null;
+    const m = measureSource(pixels, side, bx, by, 0.5);
+    return m && m.snr >= 4 && m.peak >= 3 ? m : null;
+  }
+
+  /** Mean of finite values per pixel, weighted by the exposures in each frame. */
+  function meanStack(frames: Float32Array[], weights: number[]): Float32Array {
+    const out = new Float32Array(frames[0].length);
+    for (let i = 0; i < out.length; i++) {
+      let sum = 0, weight = 0;
+      frames.forEach((frame, k) => { if (Number.isFinite(frame[i])) { sum += frame[i] * weights[k]; weight += weights[k]; } });
+      out[i] = weight ? sum / weight : NaN;
+    }
+    return out;
+  }
+
+  /** Bisection for a monotonic, increasing `value(x)`: x where it reaches `goal`. */
+  function solve(value: (x: number) => number, goal: number, lo: number, hi: number): number {
+    if (value(lo) >= goal) return lo;
+    for (let i = 0; i < 30; i++) { const mid = (lo + hi) / 2; if (value(mid) < goal) lo = mid; else hi = mid; }
+    return hi;
+  }
+  /** Median of a chi-square distribution with `dof` degrees of freedom (Wilson–Hilferty). */
+  const chiMedian = (dof: number) => dof * (1 - 2 / (9 * dof)) ** 3;
+
+  /**
+   * Finds sources that moved or changed brightness across all visits.
+   *
+   * Every source is measured in every visit. Its motion is a straight-line fit
+   * through all visits, and the errors are calibrated on the field's own stars:
+   * a registration offset for each visit, a systematic floor from the bright
+   * stars and a centroid error for each visit from the faint ones. A source is
+   * a mover only if its motion is `threshold` times that error, it moved at
+   * least two pixels (6″), the fit is consistent with a straight line and its
+   * brightness stayed similar. Brightness changes use forced photometry with a
+   * zero point for each visit, between visits with a fair number of exposures,
+   * and must be at least 0.3 mag; much of the remaining scatter is the
+   * different wavelengths SPHEREx samples in each visit.
+   */
+  export function findMovers(frames: Float32Array[], side: number, mjds: (number | null)[], counts: number[],
+    options = { threshold: 5 }): MoverCandidate[] {
+    const threshold = options.threshold, n = frames.length;
+    let use = frames.map((_, f) => f).filter((f) => counts[f] >= 2);
+    if (use.length < 2) use = frames.map((_, f) => f);
+    if (use.length < 2) return [];
+    const most = Math.max(...use.map((f) => counts[f]));
+    const deep = frames.map((_, f) => use.includes(f) && counts[f] >= Math.max(Math.min(3, most), most / 2));
+    const epoch = mjds.find((m): m is number => m !== null && Number.isFinite(m));
+    const t = mjds.map((m) => (m !== null && Number.isFinite(m) && epoch !== undefined ? (m - epoch) / 365.25 : NaN));
+    const timed = use.filter((f) => Number.isFinite(t[f]));
+    const byDepth = [...use].sort((p, q) => counts[q] - counts[p] || q - p);
+
+    // Seeds from the mean of all visits, then from each deep visit for sources seen once.
+    const seeds = detectSources(meanStack(use.map((f) => frames[f]), use.map((f) => Math.max(1, counts[f]))), side, 4, 400);
+    for (const f of byDepth.filter((g) => deep[g]).slice(0, 8)) {
+      for (const m of detectSources(frames[f], side, 4, 400)) if (!seeds.some((s) => Math.hypot(s.x - m.x, s.y - m.y) < 2.5)) seeds.push(m);
+    }
+    // The fastest star, Barnard's Star, moves 3.4 px a year; allow for a little more.
+    const reach = (from: number, to: number) => Number.isFinite(t[from]) && Number.isFinite(t[to]) ? Math.min(4, 1.5 + 4 * Math.abs(t[to] - t[from])) : 3.5;
+    type Track = { points: (Measurement | null)[]; mover?: boolean };
+    const tracks: Track[] = [];
+    for (const seed of seeds) {
+      let first: Measurement | null = null, at = -1;
+      const claimed = (f: number) => tracks.flatMap((other) => other.points[f] ? [[other.points[f]!.x, other.points[f]!.y] as [number, number]] : []);
+      for (const f of byDepth) {
+        const m = claimSource(frames[f], side, seed.x, seed.y, 2.5, claimed(f));
+        if (m && Math.hypot(m.x - seed.x, m.y - seed.y) <= 2.5) { first = m; at = f; break; }
+      }
+      if (!first) continue;
+      // Follow it outwards in time, as Track & identify does.
+      const points: (Measurement | null)[] = frames.map(() => null);
+      points[at] = first;
+      for (const direction of [1, -1]) {
+        let previous = first, seen = at;
+        for (let f = at + direction; f >= 0 && f < n; f += direction) {
+          if (!use.includes(f)) continue;
+          const m = claimSource(frames[f], side, previous.x, previous.y, reach(seen, f), claimed(f));
+          points[f] = m;
+          if (m) { previous = m; seen = f; }
+        }
+      }
+      // Several seeds can lead to the same source.
+      if (tracks.some((other) => points.some((p, f) => p && other.points[f] && Math.hypot(p.x - other.points[f]!.x, p.y - other.points[f]!.y) < 1.5))) continue;
+      tracks.push({ points });
+    }
+    const measured = (track: Track, list = use) => list.filter((f) => track.points[f]);
+    const everywhere = (track: Track) => use.every((f) => track.points[f] && !track.points[f]!.saturated);
+
+    // Registration offset of each visit from stars measured well everywhere.
+    const solid = tracks.filter((track) => everywhere(track) && use.every((f) => track.points[f]!.snr >= 10));
+    const offset = frames.map((): [number, number] => [0, 0]);
+    if (solid.length >= 5) for (const f of use) {
+      offset[f] = [0, 1].map((axis) => median(solid.map((track) => {
+        const value = (g: number) => axis ? track.points[g]!.y : track.points[g]!.x;
+        return value(f) - use.reduce((sum, g) => sum + value(g), 0) / use.length;
+      }))) as [number, number];
+    }
+    const pos = (track: Track, f: number): [number, number] => [track.points[f]!.x - offset[f][0], track.points[f]!.y - offset[f][1]];
+
+    // Position error of one measurement: centroid noise plus a systematic floor
+    // that grows in shallower visits; saturated cores are less certain.
+    const centroid = frames.map((_, f) => CENTROID * Math.sqrt(Math.max(1, 5 / Math.max(counts[f], 1))));
+    let floor = 0.15;
+    const floorAt = (f: number, base = floor) => base * Math.sqrt(most / Math.max(counts[f], 1));
+    const variance = (m: Measurement, f: number, base = floor) => (centroid[f] / m.snr) ** 2 + floorAt(f, base) ** 2 + (m.saturated ? 0.09 : 0);
+    const fit = (track: Track, base = floor) => {
+      const fs = measured(track, timed);
+      const w = fs.map((f) => 1 / variance(track.points[f]!, f, base)), total = w.reduce((a, b) => a + b, 0);
+      const tMean = fs.reduce((sum, f, i) => sum + w[i] * t[f], 0) / total;
+      const stt = fs.reduce((sum, f, i) => sum + w[i] * (t[f] - tMean) ** 2, 0);
+      let still = 0, line = 0;
+      const rate = [0, 1].map((axis) => {
+        const v = fs.map((f) => pos(track, f)[axis]);
+        const mean = v.reduce((sum, value, i) => sum + w[i] * value, 0) / total;
+        const slope = stt > 0 ? v.reduce((sum, value, i) => sum + w[i] * (t[fs[i]] - tMean) * (value - mean), 0) / stt : 0;
+        v.forEach((value, i) => { still += w[i] * (value - mean) ** 2; line += w[i] * (value - mean - slope * (t[fs[i]] - tMean)) ** 2; });
+        return slope;
+      });
+      const speed = Math.hypot(rate[0], rate[1]);
+      const span = fs.length ? t[fs[fs.length - 1]] - t[fs[0]] : 0;
+      return { fs, speed, z: stt > 0 ? speed * Math.sqrt(stt) : 0, still, line, span };
+    };
+    // Floor: bright stationary stars should scatter as expected (the median keeps movers from mattering).
+    const bright = tracks.filter((track) => timed.length >= 2 && timed.every((f) => track.points[f] && !track.points[f]!.saturated)
+      && timed.filter((f) => track.points[f]!.snr >= 20).length >= Math.min(3, timed.length));
+    if (bright.length >= 6) {
+      floor = Math.max(0.05, solve((base) => -median(bright.map((track) => { const r = fit(track, base); return r.still / chiMedian(2 * r.fs.length - 2); })), -1, 0.02, 3));
+    }
+    // Centroid error of each visit from faint stars, each visit against the mean of the others.
+    const faint = tracks.filter((track) => timed.length >= 3 && timed.every((f) => track.points[f] && !track.points[f]!.saturated) && !bright.includes(track)).slice(0, 150);
+    if (faint.length >= 8) for (let pass = 0; pass < 3; pass++) for (const f of timed) {
+      const others = timed.filter((g) => g !== f);
+      const scatter = (k: number) => median(faint.map((track) => {
+        const [x, y] = pos(track, f);
+        const mx = others.reduce((sum, g) => sum + pos(track, g)[0], 0) / others.length;
+        const my = others.reduce((sum, g) => sum + pos(track, g)[1], 0) / others.length;
+        const own = (k / track.points[f]!.snr) ** 2 + floorAt(f) ** 2;
+        const rest = others.reduce((sum, g) => sum + variance(track.points[g]!, g), 0) / others.length ** 2;
+        return ((x - mx) ** 2 + (y - my) ** 2) / (own + rest);
+      }));
+      centroid[f] = solve((k) => -scatter(k), -chiMedian(2), CENTROID, 30);
+    }
+
+    // Bright saturated stars leave residuals in their wings; nothing near one is reported.
+    const glare = tracks.flatMap((track) => {
+      const p = track.points.find((m) => m?.saturated);
+      return p ? [{ track, x: p.x, y: p.y, radius: 2 * Math.sqrt((p.masked ?? 0) / Math.PI) + 8 }] : [];
+    });
+    const inGlare = (track: Track, x: number, y: number) => glare.some((g) => g.track !== track && Math.hypot(x - g.x, y - g.y) < g.radius);
+
     const candidates: MoverCandidate[] = [];
-    const pairedPositive = new Set<typeof positives[number]>();
-    for (const pos of positives) {
-      let partner: typeof negatives[number] | undefined, best = Infinity;
-      for (const neg of negatives) {
-        if (used.has(neg)) continue;
-        const distance = Math.hypot(neg.x - pos.x, neg.y - pos.y);
-        const balance = pos.v / -neg.v;
-        if (distance <= options.maxShift && distance < best && balance >= 1 / 3 && balance <= 3) { partner = neg; best = distance; }
+    for (const track of tracks) {
+      if (timed.length < 2) break;
+      const r = fit(track);
+      const dof = 2 * r.fs.length - 4;
+      const fluxes = r.fs.map((f) => track.points[f]!).filter((m) => !m.saturated).map((m) => m.flux);
+      const steady = fluxes.length < 2 || Math.max(...fluxes) <= 3 * Math.min(...fluxes);
+      if (r.fs.length < Math.min(3, timed.length) || r.z < threshold || r.speed * r.span < MIN_SHIFT || (dof > 0 && r.line > 3 * dof + 8) || !steady) continue;
+      const a = r.fs[0], b = r.fs[r.fs.length - 1], from = track.points[a]!, to = track.points[b]!;
+      if (inGlare(track, from.x, from.y)) continue;
+      track.mover = true;
+      candidates.push({
+        kind: "mover", x: (from.x + to.x) / 2, y: (from.y + to.y) / 2, from: [from.x, from.y], to: [to.x, to.y], score: r.z,
+        shift: Math.hypot(to.x - from.x, to.y - from.y), frames: [a, b], speed: r.speed, change: 0, visits: r.fs.length,
+        single: false, saturated: !!(from.saturated || to.saturated),
+      });
+    }
+
+    // Brightness: forced photometry at each source's mean position in every deep visit.
+    const photometryVisits = use.filter((f) => deep[f]);
+    type Flux = { flux: number; error: number; masked?: number };
+    const centre = (track: Track): [number, number] => {
+      const fs = measured(track);
+      return [0, 1].map((axis) => fs.reduce((sum, f) => sum + pos(track, f)[axis], 0) / fs.length) as [number, number];
+    };
+    const photometry = new Map<Track, (Flux | null)[]>();
+    for (const track of tracks) {
+      if (track.mover) continue;
+      const [x, y] = centre(track), saturated = track.points.some((m) => m?.saturated);
+      photometry.set(track, frames.map((_, f) => {
+        if (!deep[f]) return null;
+        const m = track.points[f];
+        // A masked core has no complete aperture: use the lower limit around the hole.
+        if (saturated) return m ? { flux: m.flux, error: m.flux / m.snr, masked: m.masked ?? 0 } : null;
+        return aperture(frames[f], side, x + offset[f][0], y + offset[f][1]);
+      }));
+    }
+    const zero = frames.map(() => 0);
+    let systematic = 0.05, noise = 2; // Resampling correlates neighbouring pixels, so apertures look less noisy than they are.
+    const ensemble = [...photometry].filter(([track, p]) => !track.points.some((m) => m?.saturated)
+      && photometryVisits.every((f) => p[f] && p[f]!.flux > 5 * p[f]!.error)).map(([, p]) => p as Flux[]);
+    if (photometryVisits.length >= 2 && ensemble.length >= 5) {
+      const mags = (p: Flux[]) => photometryVisits.map((f) => -2.5 * Math.log10(p[f].flux));
+      const solidSet = ensemble.filter((p) => photometryVisits.every((f) => p[f].flux > 15 * p[f].error));
+      if (solidSet.length >= 5) photometryVisits.forEach((f, i) => {
+        zero[f] = median(solidSet.map((p) => { const m = mags(p); return m[i] - m.reduce((a, b) => a + b, 0) / m.length; }));
+      });
+      // Leave-one-out residual of each visit against the mean of the others.
+      const residuals = (p: Flux[]) => {
+        const m = photometryVisits.map((f) => -2.5 * Math.log10(p[f].flux) - zero[f]), k = m.length;
+        return m.map((value, i) => ({ f: photometryVisits[i], r: value - (m.reduce((a, b) => a + b, 0) - value) / (k - 1) }));
+      };
+      const brightSet = ensemble.filter((p) => photometryVisits.every((f) => p[f].flux > 40 * p[f].error));
+      const k = photometryVisits.length;
+      if (brightSet.length >= 5) systematic = Math.max(0.03, spread(brightSet.flatMap((p) => residuals(p).map((e) => e.r)), 0) / Math.sqrt(k / (k - 1)));
+      const faintSet = ensemble.filter((p) => !brightSet.includes(p)).slice(0, 150);
+      if (faintSet.length >= 8) {
+        const stat = (p: Flux[], f: number, scale: number) => (1.0857 * scale * p[f].error / p[f].flux) ** 2 + systematic ** 2;
+        noise = solve((scale) => -median(faintSet.flatMap((p) => residuals(p).map(({ f, r }) =>
+          r * r / (stat(p, f, scale) + photometryVisits.filter((g) => g !== f).reduce((sum, g) => sum + stat(p, g, scale), 0) / (k - 1) ** 2)))),
+        -chiMedian(1), 1, 10);
       }
-      if (!partner) continue;
-      const before = sourcePeak(a, partner.x, partner.y), after = sourcePeak(b, pos.x, pos.y);
-      const height = Math.max(before?.height ?? 0, after?.height ?? 0);
-      const amplitude = Math.min(pos.v, -partner.v);
-      // A stationary star misregistered by a fraction of a pixel leaves a weak
-      // dipole relative to its own peak; a real mover leaves a strong one.
-      const relative = amplitude / Math.max(height, sigma);
-      if (relative < 0.25) continue;
-      used.add(partner); pairedPositive.add(pos);
-      // Refine both ends with centroids for a sub-pixel shift.
-      const fromC = before ? [before.x, before.y] as [number, number] : [partner.x, partner.y] as [number, number];
-      const toC = after ? [after.x, after.y] as [number, number] : [pos.x, pos.y] as [number, number];
-      candidates.push({ kind: "mover", x: (fromC[0] + toC[0]) / 2, y: (fromC[1] + toC[1]) / 2, from: fromC, to: toC,
-        score: amplitude / sigma, shift: Math.hypot(toC[0] - fromC[0], toC[1] - fromC[1]), relative });
     }
-    for (const e of extrema) {
-      if (Math.abs(e.v) < 1.6 * options.threshold * sigma || pairedPositive.has(e) || used.has(e)) continue;
-      if (candidates.some((c) => Math.hypot(c.x - e.x, c.y - e.y) < 4)) continue;
-      candidates.push({ kind: e.v > 0 ? "brighter" : "fainter", x: e.x, y: e.y, from: [e.x, e.y], to: [e.x, e.y], score: Math.abs(e.v) / sigma, shift: 0, relative: 0 });
+    for (const [track, p] of photometry) {
+      const values = photometryVisits.filter((f) => p[f]).map((f) => {
+        const gain = 10 ** (0.4 * zero[f]);
+        return { f, flux: p[f]!.flux * gain, error: noise * p[f]!.error * gain, masked: p[f]!.masked };
+      });
+      if (values.length < 2) continue;
+      const hi = values.reduce((a, b) => (b.flux > a.flux ? b : a)), lo = values.reduce((a, b) => (b.flux < a.flux ? b : a));
+      const saturated = hi.masked !== undefined;
+      const sys = saturated ? Math.hypot(systematic, 0.05) : systematic;
+      const z = (hi.flux - lo.flux) / Math.hypot(hi.error, lo.error, sys * hi.flux, sys * Math.max(lo.flux, 0));
+      const ratio = Math.max(lo.flux, 0) / hi.flux, seen = values.filter((v) => v.flux > 5 * v.error).length;
+      if (z < threshold || ratio > 10 ** (-0.4 * 0.3)) continue;
+      if (seen < 2 && hi.flux < 10 * hi.error) continue;
+      // A brighter saturated star masks more pixels; disagreement means the lower limits mislead.
+      if (saturated && lo.masked !== undefined && hi.masked! < lo.masked) continue;
+      const [x, y] = centre(track);
+      if (inGlare(track, x, y)) continue;
+      const [a, b] = hi.f < lo.f ? [hi.f, lo.f] : [lo.f, hi.f];
+      const later = hi.f > lo.f ? hi : lo, earlier = hi.f > lo.f ? lo : hi;
+      candidates.push({
+        kind: hi.f > lo.f ? "brighter" : "fainter", x, y, from: [x, y], to: [x, y], score: z, shift: 0, frames: [a, b], speed: 0,
+        change: -2.5 * Math.log10(Math.max(later.flux, 0.01 * hi.flux) / Math.max(earlier.flux, 0.01 * hi.flux)),
+        visits: seen, single: seen < 2, saturated,
+      });
     }
-    const rank = (c: MoverCandidate) => (c.kind === "mover" ? 1000 : 0) + c.score;
+    const rank = (c: MoverCandidate) => (c.kind === "mover" ? 1e6 : 0) + c.score;
     return candidates.sort((p, q) => rank(q) - rank(p)).slice(0, 20);
   }
 

@@ -56,12 +56,21 @@ exist and offers to load them.
 
 ## Discover and identify
 
-- **Find movers** (or `F`) looks for the signature of a moving source in B − A
-  (**What changed**): a fading spot next to a brightening one. It runs on its
-  own whenever A and B are set, and the button shows what it found; press it
-  to step through the candidates. Sources that only changed brightness are
-  listed separately. By default A and B are the two full visits furthest apart
-  in time, so slow movers shift the most.
+- **Find movers** (or `F`) measures every source in every visit. It runs on
+  its own when a field loads, and the button shows what it found; press it to
+  step through the candidates. Each candidate sets A and B to the two visits
+  that show it best, ready for **Blink**. A mover needs a straight-line motion
+  through all its visits of at least 5σ and one pixel (3″), with steady
+  brightness. The errors are calibrated on the field's own stars: a
+  registration offset per visit, a systematic floor from the bright stars and a
+  centroid error per visit from the faint ones, so shallow visits count for
+  less. Brightness changes use forced photometry with a zero point per visit,
+  only between visits with at least half the exposures of the deepest, and must
+  be 5σ and 0.3 mag; a saturated star counts only if its masked core grows with
+  its brightness. Nothing is reported in the glare around a saturated star. On
+  the bundled examples and live 5′ and 10′ WISE 0855 fields it reports the
+  target and nothing else. By default A and B are the two full visits furthest
+  apart in time.
 - **Track & identify** (click a source, or `T`) measures the source's position
   and brightness in every visit, fits its motion in arcsec per year, and draws
   its path. It then checks SIMBAD (with the Harvard mirror as a fallback), Gaia
@@ -93,10 +102,27 @@ podman build -t skyshift .   # or docker build
 podman run -p 8080:8080 skyshift
 ```
 
-Any container host can run it (for example Render, Fly.io, Railway or Cloud
-Run). `HOST` and `PORT` select the listening address; the default is
-`127.0.0.1:4173` for local use. The browser reads image pixels directly from
-the public SPHEREx S3 bucket, which allows cross-origin range requests.
+Any container host can run it (for example Azure Container Apps, Render,
+Fly.io or Cloud Run). `HOST` and `PORT` select the listening address; the
+default is `127.0.0.1:4173` for local use. The browser reads image pixels
+directly from the public SPHEREx S3 bucket, which allows cross-origin range
+requests.
+
+On Azure Container Apps, `az containerapp up` builds the image from the
+`Dockerfile` in the cloud and gives it a public HTTPS address:
+
+```sh
+az login
+az extension add --name containerapp --upgrade
+az containerapp up --name skyshift --resource-group skyshift --location westeurope \
+  --source . --ingress external --target-port 8080
+# Keep one copy running so the first visitor does not wait for a cold start.
+az containerapp update --name skyshift --resource-group skyshift --min-replicas 1
+```
+
+On Azure App Service (Web App for Containers), set the app setting
+`WEBSITES_PORT=8080`. The server needs outbound HTTPS to IRSA, CDS/SIMBAD,
+Gaia and IMCCE; no secrets or storage are required.
 
 ## Build the other offline examples
 
@@ -130,7 +156,10 @@ for the full acceptance criteria.
 **This is not yet a release-ready implementation.** Verified on 2026-11-14 in
 headless Chromium: the live IRSA search, S3 range reads and alignment for all five
 targets; Find movers, Track & identify (live SIMBAD, Gaia DR3 and SkyBoT) and the
-colour composite. Still unverified: physical phone and desktop browsers,
+colour composite. On 2026-11-15 the mover finder reported the target and nothing
+else in the five bundled fields and in live 5′ and 10′ WISE 0855 fields and live
+10′ Barnard's Star, Epsilon Indi B and RW Aurigae fields; a live 20′ field has not
+been checked. Still unverified: physical phone and desktop browsers,
 persistent-cache reload, and a public deployment (the container image builds
 locally). The wavelength filter selects exposure bandpasses at the field centre; it is
 not a time-resolved 102-channel calibrated cube. The Gaia catalogue route answers live;

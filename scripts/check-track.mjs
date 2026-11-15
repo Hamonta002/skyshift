@@ -23,7 +23,7 @@ async function analyse(fixture) {
   const [a, b] = full.slice(-2);
   const track = sky.trackSource(series.frames, series.side, b, fixture.half, fixture.half, fixture, mjds);
   return { series, a, b, track, motion: sky.fitMotion(track), light: sky.brightness(track, series.frames.length),
-    movers: sky.findMovers(series.frames[a], series.frames[b], series.side) };
+    movers: sky.findMovers(series.frames, series.side, mjds, series.counts) };
 }
 
 // gridToSky inverts fieldPixel.
@@ -55,26 +55,49 @@ for (const [id, fixture] of Object.entries(fixtures)) {
     assert.ok(result.track.every((p) => p.saturated), `${id}: saturated core detected`);
     assert.ok(result.track.every((p) => Math.hypot(p.x - fixture.half, p.y - fixture.half) < 1.5), `${id}: position from the masked core`);
   }
-  if (id === 'wise0855' || id === 'barnard') {
-    const top = result.movers[0];
-    assert.equal(top.kind, 'mover', `${id}: top candidate is a mover`);
-    assert.ok(Math.hypot(top.x - fixture.half, top.y - fixture.half) < 3, `${id}: mover found at the target`);
-  }
+  // The mover finder reports the target and nothing else in these fields.
+  const atTarget = (c) => Math.hypot(c.x - fixture.half, c.y - fixture.half) < 3;
+  const movers = result.movers.filter((c) => c.kind === 'mover');
+  assert.ok(result.movers.every(atTarget), `${id}: no false candidates (${result.movers.map((c) => `${c.kind} at ${(c.x - fixture.half).toFixed(0)},${(c.y - fixture.half).toFixed(0)}`).join('; ')})`);
+  if (want.moving) {
+    assert.equal(movers.length, 1, `${id}: one mover`);
+    const speed = movers[0].speed * fixture.scale;
+    assert.ok(Math.abs(speed - want.total) <= 0.25 * want.total, `${id}: finder speed ${speed.toFixed(2)} vs ${want.total}`);
+    assert.ok(movers[0].frames[0] < movers[0].frames[1] && movers[0].shift > 1, `${id}: shown across two visits`);
+  } else assert.equal(movers.length, 0, `${id}: no movers`);
+  if (id === 'rwaur') assert.ok(result.movers.some((c) => c.kind === 'brighter' && atTarget(c)), 'rwaur: brightness change found');
+  if (id === 'rdra') assert.ok(result.movers.some((c) => c.kind === 'fainter' && c.saturated && atTarget(c)), 'rdra: fading found from the masked core');
   console.log(`${id}: ${result.motion.total.toFixed(2)} ± ${result.motion.error.toFixed(2)}″/yr at ${result.motion.angle.toFixed(0)}°, variable ${result.light.variable}, ${result.movers.filter((m) => m.kind === 'mover').length} mover candidate(s)`);
 }
 
-// Synthetic: a pure shift is a mover; a stationary brightening is not.
+// Synthetic: three visits half a year apart with noise and a field of stars.
 {
-  const side = 41, star = (cx, cy, amp) => Float32Array.from({ length: side * side }, (_, i) => {
-    const x = i % side, y = Math.floor(i / side);
-    return amp * Math.exp(-((x - cx) ** 2 + (y - cy) ** 2) / 2) + 0.01 * Math.sin(i * 12.9898);
-  });
-  const shifted = sky.findMovers(star(20, 20, 10), star(23, 20, 10), side);
-  assert.equal(shifted[0].kind, 'mover');
-  assert.ok(Math.abs(shifted[0].shift - 3) < 0.5, `shift ${shifted[0].shift}`);
-  const brighter = sky.findMovers(star(20, 20, 10), star(20, 20, 14), side);
-  assert.ok(brighter.length && brighter.every((c) => c.kind !== 'mover'), 'brightening is not a mover');
-  assert.equal(brighter[0].kind, 'brighter');
+  const side = 81, mjds = [60000, 60182.6, 60365.25], counts = [10, 10, 10];
+  let seed = 7;
+  const random = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  const gauss = () => random() + random() + random() + random() - 2;
+  const field = Array.from({ length: 30 }, () => [8 + random() * 65, 8 + random() * 65, 2 + random() * 20]);
+  const frame = (extra) => {
+    const pixels = Float32Array.from({ length: side * side }, () => 0.05 * gauss());
+    for (const [cx, cy, amp] of [...field, ...extra]) for (let y = Math.max(0, Math.floor(cy - 6)); y <= Math.min(side - 1, cy + 6); y++)
+      for (let x = Math.max(0, Math.floor(cx - 6)); x <= Math.min(side - 1, cx + 6); x++) pixels[y * side + x] += amp * Math.exp(-((x - cx) ** 2 + (y - cy) ** 2) / 1.5);
+    return pixels;
+  };
+  const moving = [0, 1, 2].map((i) => frame([[40 + 1.5 * i, 40, 6]]));
+  const found = sky.findMovers(moving, side, mjds, counts);
+  assert.equal(found.length, 1, `synthetic mover: ${found.map((c) => c.kind)}`);
+  assert.equal(found[0].kind, 'mover');
+  assert.ok(Math.abs(found[0].speed - 3) < 0.3, `synthetic speed ${found[0].speed}`);
+  assert.deepEqual(found[0].frames, [0, 2]);
+  assert.ok(Math.abs(found[0].shift - 3) < 0.3, `synthetic shift ${found[0].shift}`);
+  const brightening = [6, 6, 12].map((amp) => frame([[40, 40, amp]]));
+  const changed = sky.findMovers(brightening, side, mjds, counts);
+  assert.ok(changed.length === 1 && changed[0].kind === 'brighter' && !changed[0].single, `synthetic brightening: ${changed.map((c) => c.kind)}`);
+  assert.ok(Math.abs(changed[0].change + 0.75) < 0.15, `brightening of ${changed[0].change} mag`);
+  assert.equal(sky.findMovers([0, 1, 2].map(() => frame([])), side, mjds, counts).length, 0, 'a still field has no candidates');
+  const appearing = [frame([]), frame([]), frame([[40, 40, 6]])];
+  const fresh = sky.findMovers(appearing, side, mjds, counts);
+  assert.ok(fresh.length === 1 && fresh[0].kind === 'brighter' && fresh[0].single, `synthetic new source: ${fresh.map((c) => c.kind)}`);
 }
 
 // Deep stack and colour-band cropping.
