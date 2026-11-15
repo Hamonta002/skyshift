@@ -147,7 +147,8 @@ try {
   const sources = ["science", "wasm", "worker", "coordinates", "archive", "spectrum", "catalogue", "map", "track", "viewer"];
   const assemble = compileTypeScript(sources.map((name) => `src/${name}.ts`));
   const compute = assemble(sources.slice(0, 2));
-  const worker = assemble(sources.slice(0, 3)) + "\nSkyShift.installWorker(self);";
+  const workerBundle = assemble(["science", "wasm", "coordinates", "archive", "worker"]);
+  const worker = workerBundle + "\nSkyShift.installWorker(self);";
   const viewer = assemble(sources);
   const exampleSource = join(root, "reference/fixtures/examples");
   // Examples bundled in this build; the viewer fetches only these and goes
@@ -170,7 +171,7 @@ try {
   if (bytes.length) writeFileSync(wasmPath, bytes);
   else rmSync(wasmPath, { force: true });
   writeFileSync(join(out, "core.cjs"), compute + "\nmodule.exports = SkyShift;\n");
-  writeFileSync(join(out, "worker.cjs"), assemble(sources.slice(0, 3)) + "\nmodule.exports = SkyShift;\n");
+  writeFileSync(join(out, "worker.cjs"), workerBundle + "\nmodule.exports = SkyShift;\n");
   writeFileSync(join(out, "archive.cjs"), assemble(["science", "coordinates", "archive", "spectrum", "catalogue", "map", "track"]) + "\nmodule.exports = SkyShift;\n");
   writeFileSync(join(out, "fixture.json"), JSON.stringify(data));
   const exampleOutput = join(out, "examples");

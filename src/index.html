@@ -35,6 +35,7 @@
           <label>Field <select id="fov"><option value="5">5′</option><option value="10">10′</option><option value="20">20′</option></select></label>
           <label>From (UTC) <input id="date-from" type="date"></label>
           <label>Through (UTC) <input id="date-to" type="date"></label>
+          <p id="preflight-estimate" class="options-note"></p>
           <p class="options-note">Used by search and by “Search this area”. Leave both dates blank for all observations.</p>
         </div>
       </div>
@@ -48,6 +49,32 @@
   </header>
 
   <button id="search-area" class="search-area-pill" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/></svg>Search this area</button>
+
+  <div id="map-locator" class="map-locator" role="status" aria-live="polite">
+    <span id="locator-zone" class="locator-zone inside">Inside field</span>
+    <span id="locator-offset" class="locator-offset">Centered on WISE 0855</span>
+    <span id="locator-coords" class="locator-coords"></span>
+    <button id="locator-return" class="locator-return" type="button" hidden title="Return to loaded field centre (0)">Back to field</button>
+  </div>
+
+  <aside id="movers-panel" class="movers-panel card" aria-labelledby="movers-heading">
+    <div class="movers-head">
+      <div>
+        <h2 id="movers-heading">Movers &amp; changes</h2>
+        <p id="movers-subtitle" class="movers-subtitle">Visit A → B in this field</p>
+      </div>
+      <button id="movers-toggle" class="icon-button movers-toggle" type="button" aria-expanded="true" aria-controls="movers-body" title="Collapse or expand mover list"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+    </div>
+    <div id="movers-body" class="movers-body">
+      <div id="movers-filters" class="movers-filters" role="group" aria-label="Filter detected objects">
+        <button type="button" data-filter="all" class="active">All <span id="count-all">0</span></button>
+        <button type="button" data-filter="mover">Moved <span id="count-mover">0</span></button>
+        <button type="button" data-filter="variable">Brightness <span id="count-variable">0</span></button>
+      </div>
+      <ul id="movers-list" class="movers-list" role="listbox" aria-label="Detected moving and variable objects in current field"></ul>
+      <p id="movers-empty" class="movers-empty" hidden>No moving or brightness-changing objects detected between A and B.</p>
+    </div>
+  </aside>
 
   <aside id="panel" class="panel" aria-labelledby="target" hidden>
     <div class="panel-header">
@@ -111,10 +138,11 @@
       </details>
       <details class="tools">
         <summary>Spectrum</summary>
-        <p>Quick-look spectrum uses approximate aperture photometry.</p>
+        <p>Quick-look spectrum uses proper-motion-aware aperture photometry (or 3–6 px ring photometry for saturated cores) at the tracked, selected, or central target.</p>
         <button id="spectrum" type="button">Calculate spectrum</button>
         <p id="spectrum-status" role="status"></p>
         <canvas id="spectrum-chart" width="760" height="260" hidden aria-label="Spectrum chart" role="img"></canvas>
+        <p id="spectrum-comparison" class="options-note" hidden></p>
         <a id="spectrum-download" hidden download="skyshift-spectrum.csv">Download spectrum CSV</a>
       </details>
       <details class="tools" id="colour-tools">
@@ -131,7 +159,7 @@
       </details>
       <details class="tools">
         <summary>Quality and provenance</summary>
-        <p>Inspect the 3 × 3 native pixels at the field centre in one exposure. Visit stacks can contain additional flags. Requires Astropy on the server.</p>
+        <p>Inspect the 3 × 3 native detector pixels at the selected position, tracked source, or field centre in the current exposure.</p>
         <button id="quality-fetch" type="button">Inspect exposure flags</button>
         <p>Or decode a flag value obtained from a data product.</p>
         <label>Flag value <input id="quality-value" type="number" min="0" max="4294967295" step="1" value="0"></label>
@@ -148,6 +176,7 @@
         <label class="inline-field">Cache
           <select id="cache"><option value="results" selected>Inputs + results</option><option value="inputs">Inputs</option><option value="none">Off</option></select>
         </label>
+        <p id="cache-status" class="options-note" role="status">Cache usage: checking…</p>
         <button id="clear-cache" type="button">Clear browser cache</button>
         <button id="show-benchmark" type="button">Benchmark</button>
         <section class="benchmark" id="benchmark" aria-labelledby="benchmark-heading" hidden>
@@ -265,6 +294,7 @@
         <button id="previous" type="button" aria-label="Previous frame" title="Previous frame (,)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button>
         <button id="play" type="button" aria-pressed="false" title="Play visits (Space)">Play</button>
         <button id="next" type="button" aria-label="Next frame" title="Next frame (.)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 6 6 6-6 6"/></svg></button>
+        <select id="speed" aria-label="Playback speed" title="Playback speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select>
       </div>
       <div class="visits" id="visits" role="group" aria-label="Observing visits"></div>
       <div class="compare" aria-label="Compare observations" role="group">

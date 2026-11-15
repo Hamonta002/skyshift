@@ -33,10 +33,36 @@ const params = new URLSearchParams({catalogue:'gaia', ra:'133.7', dec:'-7.2', fo
 const result = await searchCatalogue(params, async (url) => {
   assert.equal(url.hostname, 'gea.esac.esa.int');
   assert.match(url.searchParams.get('QUERY'), /gaiadr3\.gaia_source/);
-  return new Response('source_id,ra,dec,pmra,pmdec\n1234567890123456789,133.7,-7.2,-10.5,0\n');
+  assert.match(url.searchParams.get('QUERY'), /ORDER BY phot_g_mean_mag ASC/);
+  return new Response('source_id,ra,dec,pmra,pmdec,phot_g_mean_mag,bp_rp,parallax\n1234567890123456789,133.7,-7.2,-10.5,0,14.25,1.8,45.2\n');
 });
 assert.equal(result.sources[0].id, '1234567890123456789');
 assert.equal(result.sources[0].pmdec, 0);
+assert.equal(result.sources[0].magnitude, 14.25);
+assert.equal(result.sources[0].colour, 1.8);
+assert.equal(result.sources[0].parallax, 45.2);
+assert.ok(sky.formatCatalogueSource(result.sources[0]).includes('G = 14.25'));
+
+// P2-04: CatWISE2020 query sorting (ORDER BY w1mpro ASC), proper-motion conversion (arcsec/yr -> mas/yr), and epoch 2015.4 propagation.
+{
+  const wiseParams = new URLSearchParams({catalogue:'wise', ra:'133.7', dec:'-7.2', fov:'5'});
+  const wiseRes = await searchCatalogue(wiseParams, async (url) => {
+    assert.equal(url.hostname, 'irsa.ipac.caltech.edu');
+    assert.match(url.searchParams.get('QUERY'), /ORDER BY w1mpro ASC/);
+    return new Response('source_name,ra,dec,pmra,pmdec,w1mpro,w2mpro\nJ085510.83-071442.5,133.759765,-7.242186,-8.12,0.67,17.82,14.02\n');
+  });
+  const s = wiseRes.sources[0];
+  assert.equal(s.id, 'J085510.83-071442.5');
+  assert.equal(s.catalogue, 'wise');
+  assert.equal(s.pmra, -8120);
+  assert.equal(s.pmdec, 670);
+  assert.equal(s.epoch, 2015.4);
+  assert.equal(s.magnitude, 17.82);
+  assert.ok(Math.abs(s.colour - 3.8) < 1e-6);
+  const formatted = sky.formatCatalogueSource(s);
+  assert.ok(formatted.includes('CatWISE2020 J085510.83-071442.5') && formatted.includes('W1 = 17.82') && formatted.includes('8.15″/yr'));
+}
+
 const central = {id:'x',ra:fixture.ra0,dec:fixture.dec0,pmra:0,pmdec:3600,epoch:2016};
 const origin = sky.cataloguePixel(fixture,central,2016);
 assert.ok(Math.abs(origin[0] - fixture.half) < 1e-8 && Math.abs(origin[1] - fixture.half) < 1e-8);
@@ -85,6 +111,56 @@ for (const [id, minPmMas] of [['wise0855', 8000], ['barnard', 10000], ['epsindiB
   const spec = await sky.quickSpectrum(testFix, new AbortController().signal);
   assert.equal(spec.length, 1);
   assert.ok(spec[0].flux > 0.1, `Barnard aperture photometry tracks moving star (flux=${spec[0].flux})`);
+  assert.equal(spec[0].mode, 'aperture');
+  assert.equal(spec[0].saturated, false);
+  assert.ok(spec[0].error > 0);
+}
+
+// P2-01: resolveSpectrumTarget priority (tracked -> selected -> target/field centre)
+{
+  const resolvedDefault = sky.resolveSpectrumTarget(fixture, 'wise0855', null, null);
+  assert.ok(resolvedDefault.label.includes('WISE 0855'));
+  assert.equal(resolvedDefault.pmra, -8123.7);
+  const resolvedSelected = sky.resolveSpectrumTarget(fixture, 'wise0855', null, {
+    ra: 133.9, dec: -7.1, label: 'Selected star', pmra: 120, pmdec: -40, epoch: 2016.0,
+  });
+  assert.equal(resolvedSelected.label, 'Selected star');
+  assert.equal(resolvedSelected.pmra, 120);
+  const resolvedTracked = sky.resolveSpectrumTarget(fixture, 'wise0855', {
+    start: { ra: 133.9, dec: -7.1, frame: 0 },
+    points: [{ frame: 0, ra: 133.9, dec: -7.1, mjd: 60800 }],
+    motion: { significant: true, east: -8.1, north: 0.68 },
+    id: {
+      simbad: { matches: [{ name: 'Tracked SIMBAD', pmra: -8118, pmdec: 680 }] },
+      gaia: { matches: [] },
+    },
+  }, { ra: 133.8, dec: -7.24, label: 'Selected star' });
+  assert.equal(resolvedTracked.label, 'Tracked SIMBAD');
+  assert.equal(resolvedTracked.pmra, -8118);
+}
+
+// P2-01: WISE 0855 visit-tagged spectrum and matched-wavelength visit comparison
+{
+  const wiseSpec = await sky.quickSpectrum(fixture, new AbortController().signal, sky.resolveSpectrumTarget(fixture, 'wise0855', null, null));
+  assert.equal(wiseSpec.length, 45);
+  assert.deepEqual([...new Set(wiseSpec.map(p => p.visit))].sort(), [0, 1, 2]);
+  assert.ok(wiseSpec.every(p => p.mode === 'aperture' && !p.saturated && p.error > 0));
+  const comp = sky.compareSpectrumVisits(wiseSpec, fixture.dates);
+  assert.equal(comp.bins.length, 3);
+  assert.ok(comp.summary.includes('Matched-wavelength visit medians'));
+}
+
+// P2-01: R Draconis saturated-core wing/ring photometry fallback & visit variability
+{
+  const rdraFix = structuredClone(require('../reference/fixtures/examples/rdra.json').fixture);
+  rdraFix.headers.forEach((h, i) => { h.wavelength = 3.9 + (i % 12) * 0.08; h.bandwidth = 0.04; });
+  const rdraTarget = sky.resolveSpectrumTarget(rdraFix, 'rdra', null, null);
+  const rdraSpec = await sky.quickSpectrum(rdraFix, new AbortController().signal, rdraTarget);
+  assert.equal(rdraSpec.length, 34);
+  assert.ok(rdraSpec.every(p => p.mode === 'ring' && p.saturated === true && p.flux > 0.9 && p.error > 0));
+  const rdraComp = sky.compareSpectrumVisits(rdraSpec, rdraFix.dates);
+  assert.equal(rdraComp.bins.length, 3);
+  assert.ok(Math.abs(rdraComp.medianDeltaMag) > 0.5, `Expected strong R Dra variability, got Δmag=${rdraComp.medianDeltaMag}`);
 }
 await assert.rejects(() => searchCatalogue(new URLSearchParams({catalogue:'gaia',ra:'1',dec:'2',fov:'999'}), () => {throw Error('unexpected fetch')}));
 console.log('Exposure, wavelength, quality and catalogue checks passed (offline fixtures).');

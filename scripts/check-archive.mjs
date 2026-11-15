@@ -162,4 +162,62 @@ assert.equal(sky.parseRetryAfterMs(null, 1000), 1000);
   } finally { globalThis.fetch = originalFetch; }
 }
 
+// P2-03: In-flight crop deduplication & cacheDiagnostics.
+{
+  let rangeCalls = 0;
+  globalThis.fetch = async (_url, options) => {
+    rangeCalls++;
+    await new Promise((r) => setTimeout(r, 10));
+    const match = /^bytes=(\d+)-(\d+)$/.exec(options.headers.Range);
+    const start = Number(match[1]), end = Number(match[2]);
+    return new Response(file.slice(start, end + 1), { status: 206, headers: { 'Content-Range': `bytes ${start}-${end}/${file.length}` } });
+  };
+  try {
+    const obs = { id: 'dedup', productKey: 'dr1/level2/2025W19_1B/l2b-v27-2026-197/6/dedup.fits', detector: 6, startMjd: 60800, endMjd: 60801 };
+    const [c1, c2] = await Promise.all([
+      sky.fetchExposure(obs, 133.7, -7.2, 5, new AbortController().signal),
+      sky.fetchExposure(obs, 133.7, -7.2, 5, new AbortController().signal),
+    ]);
+    assert.equal(rangeCalls, 2, 'Concurrent identical crop requests share in-flight promise (header + pixels only once)');
+    assert.equal(c1.header.productKey, c2.header.productKey);
+    const diag = await sky.cacheDiagnostics();
+    assert.ok(diag.memoryCrops >= 2, `Expected >=2 cached crops, got ${diag.memoryCrops}`);
+    assert.ok(diag.memoryCropBytes > 0);
+    assert.equal(diag.waveGrids, 2);
+  } finally { globalThis.fetch = originalFetch; }
+}
+
+// P2-06: Preflight download estimation and frame wavelength spans.
+{
+  const est5 = sky.estimateDownloadBytes([], 5);
+  const est20 = sky.estimateDownloadBytes([], 20);
+  assert.ok(est20.perExposureBytes > est5.perExposureBytes, '20-arcmin field has larger per-exposure byte estimate than 5-arcmin');
+  assert.ok(est5.maximumExposures > est20.maximumExposures);
+  const mockObs = Array.from({ length: 12 }, (_, i) => ({
+    id: `e${i}`, productKey: `dr1/level2/2025W19_1B/l2b-v27-2026-197/6/e${i}.fits`, detector: 6, startMjd: 60800 + Math.floor(i / 4) * 50, endMjd: 60801 + Math.floor(i / 4) * 50,
+  }));
+  const estObs = sky.estimateDownloadBytes(mockObs, 5);
+  assert.equal(estObs.totalVisits, 3);
+  assert.equal(estObs.keptVisits, 3);
+  assert.equal(estObs.selectedExposures, 12);
+  assert.equal(estObs.totalBytes, 12 * estObs.perExposureBytes);
+
+  const sampleFixture = {
+    id: 'wspan', ra0: 133.7, dec0: -7.2, half: 20, scale: 3.075, dates: ['2025-05-01'], visitSizes: [2],
+    headers: [
+      { size: 41, x0: 0, y0: 0, crval: [133.7, -7.2], crpix: [21, 21], cdelt: [-0.001, 0.001], pc: [1, 0, 0, 1], a: {}, b: {}, ap: {}, bp: {}, wavelength: 4.50, bandwidth: 0.04 },
+      { size: 41, x0: 0, y0: 0, crval: [133.7, -7.2], crpix: [21, 21], cdelt: [-0.001, 0.001], pc: [1, 0, 0, 1], a: {}, b: {}, ap: {}, bp: {}, wavelength: 4.80, bandwidth: 0.06 },
+    ],
+    pixels: '',
+  };
+  const visitSpan = sky.frameWavelengthSpan(sampleFixture, 0, 'visits', 6);
+  assert.equal(visitSpan.exact, true);
+  assert.ok(Math.abs(visitSpan.min - 4.48) < 1e-6 && Math.abs(visitSpan.max - 4.83) < 1e-6);
+  const expSpan = sky.frameWavelengthSpan(sampleFixture, 1, 'exposures', 6);
+  assert.equal(expSpan.exact, true);
+  assert.ok(Math.abs(expSpan.min - 4.77) < 1e-6 && Math.abs(expSpan.max - 4.83) < 1e-6);
+  const nominalSpan = sky.frameWavelengthSpan({ ...sampleFixture, headers: [{ ...sampleFixture.headers[0], wavelength: undefined, bandwidth: undefined }] }, 0, 'visits', 2);
+  assert.deepEqual(nominalSpan, { min: 1.10, max: 1.65, exact: false });
+}
+
 console.log('Archive and coordinate checks passed (synthetic FITS and VOTable; no live service).');

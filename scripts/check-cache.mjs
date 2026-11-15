@@ -38,6 +38,28 @@ if (hasWasm) {
 for (const result of toCompare) {
   assert.deepEqual(worker.compareSeries(first.series, result.series), { maxError: 0, maskMismatch: 0 });
 }
+
+// P2-03: Progressive per-frame delivery during alignment.
+{
+  const streamed = [];
+  const res = await worker.runRequest(
+    { ...job, scenario: "wise0855", cache: "none" },
+    () => {},
+    cache,
+    (index, total, frame, count, side) => {
+      streamed.push({ index, total, frame: new Float32Array(frame), count, side });
+    },
+  );
+  assert.equal(streamed.length, res.series.frames.length);
+  streamed.forEach((item, i) => {
+    assert.equal(item.index, i);
+    assert.equal(item.total, res.series.frames.length);
+    assert.equal(item.side, res.series.side);
+    assert.equal(item.count, res.series.counts[i]);
+    assert.equal(item.frame.length, res.series.frames[i].length);
+  });
+}
+
 console.log("Verified cache policy on " + fileURLToPath(root));
 console.log("Input reuse reruns processing. Result reuse returns identical pixels and skips initialization and processing.");
 console.log("Storage was simulated with structured cloning. Browser IndexedDB timing is provided by the viewer.");

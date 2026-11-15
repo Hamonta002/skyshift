@@ -116,12 +116,19 @@ namespace SkyShift {
     return propagateProperMotion(target.ra, target.dec, target.pmra, target.pmdec, target.epoch ?? 2026.0, year);
   }
 
-  export function findTargetAt(ra: number, dec: number, radiusDeg = 0.002): Target | undefined {
+  export function findTargetAt(ra: number, dec: number, radiusDeg = 0.02, mjd?: number): Target | undefined {
     const cos = Math.cos(dec * Math.PI / 180);
     return TARGETS.find((target) => {
-      let dra = Math.abs(target.ra - ra);
+      const [tra, tdec] = mjd !== undefined ? targetPosition(target, mjd) : [target.ra, target.dec];
+      let dra = Math.abs(tra - ra);
       if (dra > 180) dra = 360 - dra;
-      return Math.hypot(dra * cos, target.dec - dec) <= radiusDeg;
+      if (Math.hypot(dra * cos, tdec - dec) <= radiusDeg) return true;
+      if (target.raJ2000 !== undefined && target.decJ2000 !== undefined) {
+        let draJ = Math.abs(target.raJ2000 - ra);
+        if (draJ > 180) draJ = 360 - draJ;
+        if (Math.hypot(draJ * cos, target.decJ2000 - dec) <= radiusDeg) return true;
+      }
+      return false;
     });
   }
 }
