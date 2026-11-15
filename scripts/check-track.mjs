@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 const sky = require('../dist/archive.cjs');
 const worker = require('../dist/worker.cjs');
 
 const fixtures = { wise0855: require('../dist/fixture.json') };
 for (const id of ['barnard', 'epsindiB', 'rwaur', 'rdra']) {
-  const path = new URL(`../reference/fixtures/examples/${id}.json`, import.meta.url);
-  if (existsSync(path)) fixtures[id] = require(path.pathname).fixture;
+  const path = fileURLToPath(new URL(`../reference/fixtures/examples/${id}.json`, import.meta.url));
+  if (existsSync(path)) fixtures[id] = JSON.parse(readFileSync(path, 'utf8')).fixture;
 }
 const angleDiff = (a, b) => Math.abs(((a - b + 540) % 360) - 180);
 
@@ -98,6 +99,29 @@ for (const [id, fixture] of Object.entries(fixtures)) {
   const appearing = [frame([]), frame([]), frame([[40, 40, 6]])];
   const fresh = sky.findMovers(appearing, side, mjds, counts);
   assert.ok(fresh.length === 1 && fresh[0].kind === 'brighter' && fresh[0].single, `synthetic new source: ${fresh.map((c) => c.kind)}`);
+}
+
+// Tracking can follow a larger jump after it learns the velocity or gets a proper-motion hint.
+{
+  const side = 41, star = (cx, cy, amp) => Float32Array.from({ length: side * side }, (_, i) => {
+    const x = i % side, y = Math.floor(i / side);
+    return amp * Math.exp(-((x - cx) ** 2 + (y - cy) ** 2) / 2) + 0.01 * Math.sin(i * 12.9898);
+  });
+  const testField = { ra0: 180, dec0: 0, half: 20, scale: 6.15 };
+  const frames3 = [star(20, 20, 15), star(22.5, 20, 18), star(28.0, 20, 24)];
+  const mjds3 = [60000, 60182.625, 60584.4]; // 0.5 yr then 1.1 yr (5.5 px jump between frame 1 and 2 > 3.5 px)
+  const trackedExtrap = sky.trackSource(frames3, side, 0, 20, 20, testField, mjds3);
+  assert.equal(trackedExtrap.length, 3, '2-visit MJD linear extrapolation tracks across 5.5 px inter-visit jump');
+  assert.deepEqual(trackedExtrap.map((p) => p.mjd), mjds3);
+  const lc = sky.brightness(trackedExtrap, 3);
+  assert.equal(lc.deltaMag.filter((m) => m !== null).length, 3);
+  assert.ok(lc.deltaMag[2] < lc.deltaMag[0], 'brighter frame 2 has more negative deltaMag');
+
+  // Direct jump of 5.5 px from start frame 0 -> 1 using motionHint.
+  const frames2 = [star(20, 20, 15), star(25.5, 20, 15)];
+  const mjds2 = [60000, 60365.25]; // 1 year, 5.5 px west = -5.5 * 6.15 * 1000 mas/yr east
+  const trackedHint = sky.trackSource(frames2, side, 0, 20, 20, testField, mjds2, { pmra: -5.5 * 6150, pmdec: 0 });
+  assert.equal(trackedHint.length, 2, 'motionHint tracks 5.5 px jump from first visit');
 }
 
 // Deep stack and colour-band cropping.

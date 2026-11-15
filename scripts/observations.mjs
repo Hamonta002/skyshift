@@ -3,6 +3,9 @@ import { discoveredCollections } from "./releases.mjs";
 const config = JSON.parse(readFileSync(new URL("../config/archive.json", import.meta.url), "utf8"));
 const { collections: COLLECTIONS, bandsMicron: BANDS, siaEndpoint: ARCHIVE, productPrefix: PREFIX } = config;
 const MAX_ROWS = 500;
+const DEEP_WINDOW_DAYS = 90;
+const MAX_DEEP_WINDOWS = 24;
+const USER_AGENT = "SkyShift/1.0 (+https://github.com/happinessisreal/skyshift)";
 const releaseOf = (name) => name.replace(/^spherex_/, "").replace(/_deep$/, "");
 const releases = new Set(COLLECTIONS.map(releaseOf));
 const cache = new Map();
@@ -97,20 +100,47 @@ export async function searchObservations(params, fetcher = fetch, discovered = [
   const names = [...COLLECTIONS, ...discovered.filter((name) => !COLLECTIONS.includes(name))];
   const known = new Set(names.map(releaseOf));
   const requests = names.map(async (name) => {
-    const start = name.endsWith("_deep") ? Math.max(from, to - 90) : from;
-    const query = new URLSearchParams({
-      COLLECTION: name, POS: `CIRCLE ${ra} ${dec} ${fov / 120}`,
-      BAND: `${BANDS[band - 1][0] * 1e-6} ${BANDS[band - 1][1] * 1e-6}`,
-      TIME: `${start} ${to}`, MAXREC: String(MAX_ROWS), RESPONSEFORMAT: "VOTABLE",
-    });
-    try {
-      const response = await fetcher(`${ARCHIVE}?${query}`, { signal: AbortSignal.timeout(10000) });
+    const isDeep = name.endsWith("_deep");
+    let wEnd = to;
+    let wStart = isDeep ? Math.max(from, wEnd - DEEP_WINDOW_DAYS) : from;
+    const queryWindow = async (startMjd, endMjd) => {
+      const query = new URLSearchParams({
+        COLLECTION: name, POS: `CIRCLE ${ra} ${dec} ${fov / 120}`,
+        BAND: `${BANDS[band - 1][0] * 1e-6} ${BANDS[band - 1][1] * 1e-6}`,
+        TIME: `${startMjd} ${endMjd}`, MAXREC: String(MAX_ROWS), RESPONSEFORMAT: "VOTABLE",
+      });
+      const response = await fetcher(`${ARCHIVE}?${query}`, {
+        headers: { "User-Agent": USER_AGENT },
+        signal: AbortSignal.timeout(10000),
+      });
       if (!response.ok) throw new Error(`Archive returned HTTP ${response.status}.`);
       const body = await readBoundedText(response, 10_000_000);
-      const parsed = parseVOTable(body, known);
-      return { name, status: parsed.truncated ? "truncated" : "ok", fromMjd: start, toMjd: to, ...parsed };
+      return parseVOTable(body, known);
+    };
+    try {
+      let parsed = await queryWindow(wStart, wEnd);
+      let matched = parsed.observations.filter((item) => item.detector === band);
+      let steps = 1;
+      // Deep-field surveys are queried in 90-day slices to stay below MAX_ROWS; step
+      // back when the latest slice is empty so archival deep fields (e.g. R Draconis) are found.
+      while (isDeep && !parsed.truncated && matched.length === 0 && wStart > from && steps < MAX_DEEP_WINDOWS) {
+        wEnd = wStart;
+        wStart = Math.max(from, wEnd - DEEP_WINDOW_DAYS);
+        parsed = await queryWindow(wStart, wEnd);
+        matched = parsed.observations.filter((item) => item.detector === band);
+        steps++;
+      }
+      return {
+        name,
+        status: parsed.truncated ? "truncated" : "ok",
+        fromMjd: wStart,
+        toMjd: wEnd,
+        count: matched.length,
+        observations: matched,
+        truncated: parsed.truncated,
+      };
     } catch {
-      return { name, status: "unavailable", fromMjd: start, toMjd: to, observations: [] };
+      return { name, status: "unavailable", fromMjd: wStart, toMjd: wEnd, count: 0, observations: [] };
     }
   });
   const collections = await Promise.all(requests);
@@ -121,12 +151,12 @@ export async function searchObservations(params, fetcher = fetch, discovered = [
   }
   const unique = new Map();
   for (const collection of collections) {
-    for (const item of collection.observations) if (item.detector === band) unique.set(item.productKey, item);
+    for (const item of collection.observations) unique.set(item.productKey, item);
   }
   return {
     checkedAtUtc: new Date().toISOString(),
     observations: [...unique.values()].sort((a, b) => a.startMjd - b.startMjd || a.productKey.localeCompare(b.productKey)),
-    collections: collections.map(({ name, status, fromMjd, toMjd }) => ({ name, status, fromMjd, toMjd, ...(discovered.includes(name) ? { discovered: true } : {}) })),
+    collections: collections.map(({ name, status, fromMjd, toMjd, count }) => ({ name, status, fromMjd, toMjd, count, ...(discovered.includes(name) ? { discovered: true } : {}) })),
   };
 }
 

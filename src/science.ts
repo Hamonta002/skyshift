@@ -285,6 +285,7 @@ namespace SkyShift {
     sequence: Sequence,
     engine: Engine,
     progress?: (finished: number, total: number) => void,
+    onFrame?: (index: number, total: number, frame: Float32Array, count: number, side: number) => void,
   ): AlignedSeries {
     const exposureCapacity = Math.max(...sequence.visits.map((visit) => visit.length));
     let pixelCapacity = 0;
@@ -301,6 +302,7 @@ namespace SkyShift {
       counts.push(count);
       const frame = buffer.stack(count);
       progress?.(index + 1, sequence.visits.length);
+      onFrame?.(index, sequence.visits.length, frame, count, sequence.grid.side);
       return frame;
     });
     return { side: sequence.grid.side, frames, counts };

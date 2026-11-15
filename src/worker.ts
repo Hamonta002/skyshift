@@ -1,3 +1,7 @@
+/// <reference path="science.ts" />
+/// <reference path="wasm.ts" />
+/// <reference path="coordinates.ts" />
+/// <reference path="archive.ts" />
 namespace SkyShift {
   export type CacheLevel = "none" | "inputs" | "results" | "prime";
   export type CacheHit = "miss" | "inputs" | "results";
@@ -9,6 +13,14 @@ namespace SkyShift {
     fixture: PackedFixture;
     wasm: string;
     frameMode?: "visits" | "exposures";
+    liveFetch?: {
+      observations: Observation[];
+      ra: number;
+      dec: number;
+      fov: number;
+      useCache: boolean;
+      onlyFixture?: boolean;
+    };
   }
 
   export interface WorkResult {
@@ -20,7 +32,9 @@ namespace SkyShift {
   }
 
   export type WorkMessage =
-    | { type: "progress"; done: number; total: number }
+    | { type: "progress"; done: number; total: number; phase?: "download" | "align" }
+    | { type: "frame"; index: number; total: number; side: number; count: number; pixels: Float32Array }
+    | { type: "fixture"; fixture: PackedFixture }
     | { type: "result"; result: WorkResult }
     | { type: "error"; message: string };
 
@@ -135,10 +149,28 @@ namespace SkyShift {
 
   const persistentCache: ProcessingCache = { read: cacheRead, write: cacheWrite };
 
+  export async function comparisonCacheDiagnostics(): Promise<{ entries: number; bytes: number }> {
+    try {
+      const db = await openCache();
+      return await new Promise((resolve) => {
+        const tx = db.transaction("usage", "readonly");
+        const req = tx.objectStore("usage").getAll();
+        req.onsuccess = () => {
+          const rows = (req.result as CacheMetadata[]) ?? [];
+          resolve({ entries: rows.length, bytes: rows.reduce((sum, r) => sum + (r.bytes ?? 0), 0) });
+        };
+        req.onerror = () => resolve({ entries: 0, bytes: 0 });
+      });
+    } catch {
+      return { entries: 0, bytes: 0 };
+    }
+  }
+
   export async function runRequest(
     job: WorkRequest,
     progress: (done: number, total: number) => void,
     storage: ProcessingCache = persistentCache,
+    onFrame?: (index: number, total: number, frame: Float32Array, count: number, side: number) => void,
   ): Promise<WorkResult> {
     const started = performance.now();
     const resultKey = `tan-sip2-median1:${job.fixture.id}:${job.engine}:${job.scenario}:${job.frameMode ?? "visits"}`;
@@ -159,7 +191,7 @@ namespace SkyShift {
       : typeScriptEngine;
     const initializeMs = performance.now() - initialize;
     const compute = performance.now();
-    const series = processSequence(sequence, engine, progress);
+    const series = processSequence(sequence, engine, progress, onFrame);
     const computeMs = performance.now() - compute;
     if (job.cache !== "none" && !cachedInputs) {
       const bytes = exposures.reduce((sum, item) => sum + item.pixels.byteLength + item.wcs.byteLength + 1500, 0);
@@ -171,11 +203,44 @@ namespace SkyShift {
     return { series, cacheHit: cachedInputs ? "inputs" : "miss", computeMs, initializeMs, totalMs: performance.now() - started };
   }
 
-  export function installWorker(scope: DedicatedWorkerGlobalScope): void {
+  export interface WorkerScope {
+    onmessage: ((event: MessageEvent<WorkRequest>) => unknown) | null;
+    postMessage(message: WorkMessage, transfer?: Transferable[]): void;
+  }
+
+  export function installWorker(scope: WorkerScope): void {
+    let activeController: AbortController | undefined;
     scope.onmessage = async (event: MessageEvent<WorkRequest>) => {
+      activeController?.abort();
+      const controller = new AbortController();
+      activeController = controller;
       const send = (message: WorkMessage, transfers?: Transferable[]) => scope.postMessage(message, transfers ?? []);
       try {
-        const result = await runRequest(event.data, (done, total) => send({ type: "progress", done, total }));
+        let job = event.data;
+        if (job.liveFetch) {
+          const { observations, ra, dec, fov, useCache, onlyFixture } = job.liveFetch;
+          const liveFixture = await makeLiveFixture(
+            observations,
+            ra,
+            dec,
+            fov,
+            controller.signal,
+            (done, total) => send({ type: "progress", done, total, phase: "download" }),
+            useCache,
+          );
+          send({ type: "fixture", fixture: liveFixture });
+          if (onlyFixture) return;
+          job = { ...job, fixture: liveFixture };
+        }
+        const result = await runRequest(
+          job,
+          (done, total) => send({ type: "progress", done, total, phase: "align" }),
+          persistentCache,
+          (index, total, frame, count, side) => {
+            const copy = new Float32Array(frame);
+            send({ type: "frame", index, total, side, count, pixels: copy }, [copy.buffer]);
+          },
+        );
         send({ type: "result", result }, result.series.frames.map((frame) => frame.buffer));
       } catch (error) {
         send({ type: "error", message: error instanceof Error ? error.message : String(error) });

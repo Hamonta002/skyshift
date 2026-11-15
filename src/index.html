@@ -34,6 +34,7 @@
           <label>Field size <select id="fov"><option value="5">5′ · fastest</option><option value="10">10′</option><option value="20">20′ · slowest download</option></select></label>
           <label>From (UTC) <input id="date-from" type="date"></label>
           <label>Through (UTC) <input id="date-to" type="date"></label>
+          <p id="preflight-estimate" class="options-note"></p>
           <p class="options-note">Leave both dates blank for all observations. Press Enter to search again with these settings. Change the infrared band in Layers.</p>
         </div>
       </div>
@@ -47,6 +48,32 @@
   </header>
 
   <button id="search-area" class="search-area-pill" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/></svg>Search this area</button>
+
+  <div id="map-locator" class="map-locator" role="status" aria-live="polite">
+    <span id="locator-zone" class="locator-zone inside">Inside field</span>
+    <span id="locator-offset" class="locator-offset">Centered on WISE 0855</span>
+    <span id="locator-coords" class="locator-coords"></span>
+    <button id="locator-return" class="locator-return" type="button" hidden title="Return to loaded field centre (0)">Back to field</button>
+  </div>
+
+  <aside id="movers-panel" class="movers-panel card" aria-labelledby="movers-heading">
+    <div class="movers-head">
+      <div>
+        <h2 id="movers-heading">Movers &amp; changes</h2>
+        <p id="movers-subtitle" class="movers-subtitle">Across all visits in this field</p>
+      </div>
+      <button id="movers-toggle" class="icon-button movers-toggle" type="button" aria-expanded="true" aria-controls="movers-body" title="Collapse or expand mover list"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+    </div>
+    <div id="movers-body" class="movers-body">
+      <div id="movers-filters" class="movers-filters" role="group" aria-label="Filter detected objects">
+        <button type="button" data-filter="all" class="active">All <span id="count-all">0</span></button>
+        <button type="button" data-filter="mover">Moved <span id="count-mover">0</span></button>
+        <button type="button" data-filter="variable">Brightness <span id="count-variable">0</span></button>
+      </div>
+      <ul id="movers-list" class="movers-list" aria-label="Detected moving and variable objects in current field"></ul>
+      <p id="movers-empty" class="movers-empty" hidden>No clear movement or brightness changes across the visits.</p>
+    </div>
+  </aside>
 
   <aside id="panel" class="panel" aria-labelledby="target" hidden>
     <div class="panel-header">
@@ -100,11 +127,62 @@
       <h2 class="panel-group">Explore</h2>
       <details class="tools">
         <summary>Spectrum</summary>
-        <p>A quick, approximate spectrum of the source at the centre of the field. To measure another source, click it on the map and choose Spectrum.</p>
+        <p>Estimate the spectrum of the tracked or selected source, or the field centre. When the core is masked, the estimate uses the light around it.</p>
         <button id="spectrum" type="button">Show spectrum</button>
         <p id="spectrum-status" role="status"></p>
         <canvas id="spectrum-chart" width="760" height="260" hidden aria-label="Spectrum chart" role="img"></canvas>
+        <p id="spectrum-comparison" class="options-note" hidden></p>
         <a id="spectrum-download" hidden download="skyshift-spectrum.csv">Download spectrum CSV</a>
+      </details>
+      <details class="tools" id="comparison-tools">
+        <summary>Comparison star</summary>
+        <p>Compare a target star against a reference star across SPHEREx exposures using proper-motion-aware aperture photometry and matched wavelengths.</p>
+        <div class="comp-slots">
+          <div class="comp-slot">
+            <div class="comp-slot-head">
+              <span class="comp-badge target">Target</span>
+              <div class="comp-slot-actions">
+                <button id="comp-use-tracked" type="button" title="Use currently tracked or field star">From tracked/field</button>
+                <button id="comp-target-clear" type="button">Clear</button>
+              </div>
+            </div>
+            <div id="comp-target-info" class="comp-slot-info">None selected — click a star on the map or use tracked object.</div>
+          </div>
+          <div class="comp-slot">
+            <div class="comp-slot-head">
+              <span class="comp-badge ref">Reference</span>
+              <div class="comp-slot-actions">
+                <button id="comp-load-gaia" type="button" title="Load Gaia DR3 overlay to pick a reference">Load Gaia</button>
+                <button id="comp-swap" type="button" title="Swap target and reference">Swap</button>
+                <button id="comp-ref-clear" type="button">Clear</button>
+              </div>
+            </div>
+            <div id="comp-ref-info" class="comp-slot-info">None selected — click any star / Gaia source on the map or choose below.</div>
+            <label class="comp-picker-label">Catalogue source
+              <select id="comp-ref-picker"><option value="">Choose from loaded Gaia / CatWISE…</option></select>
+            </label>
+          </div>
+        </div>
+        <label class="comp-flag-check"><input id="comp-check-flags" type="checkbox"> Check SPHEREx FLAGS at apertures (server)</label>
+        <button id="comp-run" type="button">Compare brightness</button>
+        <p id="comp-status" role="status"></p>
+        <div id="comp-results" hidden>
+          <div id="comp-assessment" class="comp-assessment" role="status"></div>
+          <figure class="comp-figure">
+            <canvas id="comp-chart" width="760" height="440" role="img" aria-label="Target, reference, and differential brightness graphs"></canvas>
+            <figcaption id="comp-chart-caption">Top: Target flux · Middle: Reference flux · Bottom: Differential variation Δmag (up = brighter). Hollow points denote 3–6 px ring estimates of saturated cores.</figcaption>
+          </figure>
+          <div id="comp-bins" class="comp-bins"></div>
+          <details class="comp-details">
+            <summary>Per-visit measurements &amp; wavelengths</summary>
+            <div class="table-scroll"><table id="comp-visits-table"></table></div>
+          </details>
+          <details class="comp-details">
+            <summary>Assumptions &amp; reliability notes</summary>
+            <ul id="comp-assumptions" class="comp-assumptions"></ul>
+          </details>
+          <a id="comp-download" hidden download="skyshift-comparison.csv">Download comparison CSV</a>
+        </div>
       </details>
       <details class="tools" id="colour-tools">
         <summary>Colour</summary>
@@ -136,7 +214,7 @@
       <h2 class="panel-group">Advanced</h2>
       <details class="tools">
         <summary>Data quality and sources</summary>
-        <p>Inspect the 3 × 3 native pixels at the field centre in one exposure. Visit stacks can contain additional flags. Requires Astropy on the server.</p>
+        <p>Inspect the 3 × 3 native detector pixels at the selected position, tracked source, or field centre in the current exposure.</p>
         <button id="quality-fetch" type="button">Inspect exposure flags</button>
         <p>Or decode a flag value obtained from a data product.</p>
         <label>Flag value <input id="quality-value" type="number" min="0" max="4294967295" step="1" value="0"></label>
@@ -153,6 +231,7 @@
         <label class="inline-field">Cache
           <select id="cache"><option value="results" selected>Inputs + results</option><option value="inputs">Inputs</option><option value="none">Off</option></select>
         </label>
+        <p id="cache-status" class="options-note" role="status">Cache usage: checking…</p>
         <button id="clear-cache" type="button">Clear browser cache</button>
         <button id="show-benchmark" type="button">Benchmark</button>
         <section class="benchmark" id="benchmark" aria-labelledby="benchmark-heading" hidden>
@@ -266,6 +345,8 @@
       <div class="here-actions">
         <button id="here-track" class="primary" type="button" title="Track and identify (T)">Track &amp; identify</button>
         <button id="here-spectrum-open" type="button">Spectrum</button>
+        <button id="here-set-target" type="button" title="Select as Target star for comparison">Set target</button>
+        <button id="here-set-reference" type="button" title="Select as Reference comparison star">Set reference</button>
         <button id="here-center" type="button">Center here</button>
         <button id="here-search" type="button">Search here</button>
         <button id="here-copy" type="button">Copy</button>
@@ -294,6 +375,7 @@
       <span id="visit-total" class="visit-total"></span>
       <button id="find-movers" class="pill-button" type="button" title="Look for sources that moved or changed across the visits (F)"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="7" cy="15" r="2.5"/><circle cx="16" cy="9" r="2.5"/><path d="M9 13.5 13.8 10.5"/></svg><span id="find-movers-label">Find movers</span></button>
       <button id="newer" class="pill-button newer-button" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"/></svg><span id="newer-label">Newer images</span></button>
+      <button id="earlier-window" class="pill-button" type="button" title="Search earlier 90-day deep-field observation window" hidden>Earlier 90 days</button>
       <span id="observation" class="observation">Aligning observations…</span>
       <button id="dock-collapse" class="icon-button dock-collapse" type="button" aria-expanded="true" aria-controls="visits" aria-label="Hide thumbnails"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
     </div>
@@ -302,6 +384,7 @@
         <button id="previous" type="button" aria-label="Previous frame" title="Previous frame (,)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button>
         <button id="play" type="button" aria-pressed="false" title="Play visits (Space)">Play</button>
         <button id="next" type="button" aria-label="Next frame" title="Next frame (.)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 6 6 6-6 6"/></svg></button>
+        <select id="speed" aria-label="Playback speed" title="Playback speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select>
       </div>
       <div class="visits" id="visits" role="group" aria-label="Observing visits"></div>
       <div class="compare" aria-label="Compare observations" role="group">

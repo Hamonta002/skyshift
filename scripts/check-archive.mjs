@@ -52,6 +52,36 @@ resetDiscovery();
 assert.deepEqual(await discoveredCollections(['spherex_dr1'], async () => { throw new TypeError('offline'); }, 1e12), []);
 resetDiscovery();
 
+// Deep-field search steps back in 90-day windows when recent slices are empty (e.g. R Draconis in DR1 deep).
+const emptyXml = `<VOTABLE><RESOURCE><TABLE>${fields.map(name => `<FIELD name="${name}"/>`).join('')}<DATA><TABLEDATA></TABLEDATA></DATA></TABLE></RESOURCE></VOTABLE>`;
+const deepPath = 'dr1/level2/2025W25_1A/l2b-deep/5/rdra_deep.fits';
+const deepRow = ['deep1', 'spherex_dr1_deep', 'SPHEREx-D5', `https://irsa.ipac.caltech.edu/ibe/data/spherex/${deepPath}`, '60850', '60850.1', ''];
+const deepXml = `<VOTABLE><RESOURCE><TABLE>${fields.map(name => `<FIELD name="${name}"/>`).join('')}<DATA><TABLEDATA><TR>${deepRow.map(value => `<TD>${value}</TD>`).join('')}</TR></TABLEDATA></DATA></TABLE></RESOURCE></VOTABLE>`;
+const rdraSeen = [];
+const rdraReply = await searchObservations(new URLSearchParams({
+  ra: '248.167233', dec: '66.755024', fov: '5', band: '5', fromMjd: '60789', toMjd: '61060',
+}), async (url, options) => {
+  assert.match(options?.headers?.['User-Agent'] ?? '', /SkyShift/);
+  const q = new URL(url).searchParams;
+  const col = q.get('COLLECTION');
+  const [start, end] = q.get('TIME').split(' ').map(Number);
+  rdraSeen.push({ col, start, end });
+  if (col === 'spherex_dr1_deep' && start <= 60850 && end >= 60850) return new Response(deepXml);
+  return new Response(emptyXml);
+});
+assert.equal(rdraReply.observations.length, 1);
+assert.equal(rdraReply.observations[0].productKey, deepPath);
+const dr1DeepMeta = rdraReply.collections.find((c) => c.name === 'spherex_dr1_deep');
+assert.ok(dr1DeepMeta.fromMjd <= 60850 && dr1DeepMeta.toMjd >= 60850);
+assert.equal(dr1DeepMeta.count, 1);
+assert.ok(rdraSeen.filter((s) => s.col === 'spherex_dr1_deep').length === 3);
+
+let narrowCalls = 0;
+await searchObservations(new URLSearchParams({
+  ra: '248.167233', dec: '66.755024', fov: '5', band: '5', fromMjd: '60800', toMjd: '60830',
+}), async () => { narrowCalls++; return new Response(emptyXml); });
+assert.equal(narrowCalls, 4);
+
 // A synthetic uncompressed detector tests offset calculation, big-endian decoding,
 // range validation, and crop projection without requiring a network connection.
 const card = (key, value) => (key.padEnd(8) + '= ' + value).padEnd(80);
@@ -79,5 +109,156 @@ try {
   assert.equal(exposure.pixels[(1020 - h.y0) * h.size + 1020 - h.x0], 2040);
   assert.equal(h.mjd, 60800.5);
   await assert.rejects(() => sky.fetchExposure({id:'bad', productKey:'../../bad.fits', detector:6, startMjd:1, endMjd:2}, 0, 0, 5, new AbortController().signal), /Invalid archive/);
+
+  // 20' FOV with >14 visits samples visits evenly (preserving oldest and newest) instead of failing.
+  const manyObs = Array.from({ length: 20 }, (_, i) => ({
+    id: `v${i}`,
+    productKey: `dr1/level2/2025W19_1B/l2b-v27-2026-197/6/v${i}.fits`,
+    detector: 6,
+    startMjd: 60800 + i * 45,
+    endMjd: 60800 + i * 45 + 0.1,
+  }));
+  const sampled20 = await sky.makeLiveFixture(manyObs, 133.7, -7.2, 20, new AbortController().signal, () => {}, false);
+  assert.equal(sampled20.dates.length, 14);
+  assert.equal(sampled20.headers[0].productKey, manyObs[0].productKey);
+  assert.equal(sampled20.headers[sampled20.headers.length - 1].productKey, manyObs[19].productKey);
 } finally { globalThis.fetch = originalFetch; }
+
+// WCS-WAVE lookup is cached per detector/release so repeated calls avoid redundant tail requests.
+{
+  const waveHeader = block([
+    card('XTENSION', "'BINTABLE'"), card('EXTNAME', "'WCS-WAVE'"),
+    card('BITPIX', '8'), card('NAXIS', '2'), card('NAXIS1', '48'), card('NAXIS2', '1'),
+    card('TFORM1', "'2J      '"), card('TFORM2', "'2J      '"), card('TFORM3', "'4E      '"), card('TFORM4', "'4E      '"),
+  ], 2880);
+  const waveBlock = new Uint8Array(5760);
+  waveBlock.set(new TextEncoder().encode(waveHeader));
+  const dv = new DataView(waveBlock.buffer, 2880);
+  dv.setInt32(0, 1, false); dv.setInt32(4, 2040, false);
+  dv.setInt32(8, 1, false); dv.setInt32(12, 2040, false);
+  for (let py = 0; py < 2; py++) for (let px = 0; px < 2; px++) {
+    const idx = 16 + 8 * (py * 2 + px);
+    dv.setFloat32(idx, 4.4 + px * 0.2 + py * 0.4, false);
+    dv.setFloat32(idx + 4, 0.04, false);
+  }
+  let waveFetches = 0;
+  globalThis.fetch = async (_url, options) => {
+    assert.equal(options?.headers?.Range, 'bytes=-5760');
+    waveFetches++;
+    return new Response(waveBlock, { status: 206 });
+  };
+  try {
+    const mkHdr = (name) => ({
+      id: name, size: 21, x0: 1000, y0: 1000, crval: [133.7, -7.2], crpix: [11, 11],
+      cdelt: [-0.0017, 0.0017], pc: [1, 0, 0, 1], a: {}, b: {}, ap: {}, bp: {},
+      productKey: `dr1/level2/2025W19_1B/l2b-v27-2026-197/6/${name}.fits`,
+    });
+    const [w1, bw1] = await sky.fetchWavelength(mkHdr('a'), 0, 0, new AbortController().signal);
+    const [w2] = await sky.fetchWavelength(mkHdr('b'), 2039, 2039, new AbortController().signal);
+    assert.equal(waveFetches, 1);
+    assert.ok(Math.abs(w1 - 4.4) < 1e-4 && Math.abs(bw1 - 0.04) < 1e-4);
+    assert.ok(Math.abs(w2 - 5.0) < 1e-4);
+    const [w5] = await sky.fetchWavelength({
+      ...mkHdr('c'), productKey: 'dr1/level2/2025W19_1B/l2b-v27-2026-197/5/c.fits',
+    }, 0, 0, new AbortController().signal);
+    assert.equal(waveFetches, 2);
+    assert.ok(Math.abs(w5 - 4.4) < 1e-4);
+
+    const cancelled = new AbortController(), active = new AbortController();
+    const header = { ...mkHdr('d'), productKey: 'dr1/level2/2025W19_1B/l2b-v27-2026-197/4/d.fits' };
+    globalThis.fetch = async (_url, { signal }) => {
+      if (signal === cancelled.signal) {
+        await new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+      }
+      return new Response(waveBlock, { status: 206 });
+    };
+    const rejected = assert.rejects(sky.fetchWavelength(header, 0, 0, cancelled.signal), { name: 'AbortError' });
+    const usable = sky.fetchWavelength(header, 0, 0, active.signal);
+    cancelled.abort();
+    const [[w4]] = await Promise.all([usable, rejected]);
+    assert.ok(Math.abs(w4 - 4.4) < 1e-4);
+  } finally { globalThis.fetch = originalFetch; }
+}
+
+// Retry-After handling for HTTP 429 and 503 range requests.
+assert.equal(sky.parseRetryAfterMs('2', 1000), 2000);
+assert.equal(sky.parseRetryAfterMs('0', 1000), 0);
+assert.equal(sky.parseRetryAfterMs('120', 1000), 15000);
+assert.equal(sky.parseRetryAfterMs('Wed, 01 Jan 2025 00:00:05 GMT', 1000, Date.parse('Wed, 01 Jan 2025 00:00:00 GMT')), 5000);
+assert.equal(sky.parseRetryAfterMs(null, 1000), 1000);
+{
+  let attempt = 0;
+  globalThis.fetch = async (_url, options) => {
+    attempt++;
+    if (attempt === 1) return new Response('', { status: 429, headers: { 'Retry-After': '0' } });
+    if (attempt === 2) return new Response('', { status: 503, headers: { 'Retry-After': '0' } });
+    const match = /^bytes=(\d+)-(\d+)$/.exec(options.headers.Range);
+    const start = Number(match[1]), end = Number(match[2]);
+    return new Response(file.slice(start, end + 1), { status: 206, headers: { 'Content-Range': `bytes ${start}-${end}/${file.length}` } });
+  };
+  try {
+    const retried = await sky.fetchExposure({ id: 'retry', productKey: 'dr1/level2/2025W19_1B/l2b-v27-2026-197/6/retry.fits', detector: 6, startMjd: 60800, endMjd: 60801 }, 133.7, -7.2, 5, new AbortController().signal);
+    assert.equal(attempt, 4); // 2 retries + header/pixel range reads
+    assert.equal(retried.header.productKey, 'dr1/level2/2025W19_1B/l2b-v27-2026-197/6/retry.fits');
+  } finally { globalThis.fetch = originalFetch; }
+}
+
+// P2-03: In-flight crop deduplication & cacheDiagnostics.
+{
+  let rangeCalls = 0;
+  globalThis.fetch = async (_url, options) => {
+    rangeCalls++;
+    await new Promise((r) => setTimeout(r, 10));
+    const match = /^bytes=(\d+)-(\d+)$/.exec(options.headers.Range);
+    const start = Number(match[1]), end = Number(match[2]);
+    return new Response(file.slice(start, end + 1), { status: 206, headers: { 'Content-Range': `bytes ${start}-${end}/${file.length}` } });
+  };
+  try {
+    const obs = { id: 'dedup', productKey: 'dr1/level2/2025W19_1B/l2b-v27-2026-197/6/dedup.fits', detector: 6, startMjd: 60800, endMjd: 60801 };
+    const [c1, c2] = await Promise.all([
+      sky.fetchExposure(obs, 133.7, -7.2, 5, new AbortController().signal),
+      sky.fetchExposure(obs, 133.7, -7.2, 5, new AbortController().signal),
+    ]);
+    assert.equal(rangeCalls, 2, 'Concurrent identical crop requests share in-flight promise (header + pixels only once)');
+    assert.equal(c1.header.productKey, c2.header.productKey);
+    const diag = await sky.cacheDiagnostics();
+    assert.ok(diag.memoryCrops >= 2, `Expected >=2 cached crops, got ${diag.memoryCrops}`);
+    assert.ok(diag.memoryCropBytes > 0);
+    assert.equal(diag.waveGrids, 3);
+  } finally { globalThis.fetch = originalFetch; }
+}
+
+// P2-06: Preflight download estimation and frame wavelength spans.
+{
+  const est5 = sky.estimateDownloadBytes([], 5);
+  const est20 = sky.estimateDownloadBytes([], 20);
+  assert.ok(est20.perExposureBytes > est5.perExposureBytes, '20-arcmin field has larger per-exposure byte estimate than 5-arcmin');
+  assert.ok(est5.maximumExposures > est20.maximumExposures);
+  const mockObs = Array.from({ length: 12 }, (_, i) => ({
+    id: `e${i}`, productKey: `dr1/level2/2025W19_1B/l2b-v27-2026-197/6/e${i}.fits`, detector: 6, startMjd: 60800 + Math.floor(i / 4) * 50, endMjd: 60801 + Math.floor(i / 4) * 50,
+  }));
+  const estObs = sky.estimateDownloadBytes(mockObs, 5);
+  assert.equal(estObs.totalVisits, 3);
+  assert.equal(estObs.keptVisits, 3);
+  assert.equal(estObs.selectedExposures, 12);
+  assert.equal(estObs.totalBytes, 12 * estObs.perExposureBytes);
+
+  const sampleFixture = {
+    id: 'wspan', ra0: 133.7, dec0: -7.2, half: 20, scale: 3.075, dates: ['2025-05-01'], visitSizes: [2],
+    headers: [
+      { size: 41, x0: 0, y0: 0, crval: [133.7, -7.2], crpix: [21, 21], cdelt: [-0.001, 0.001], pc: [1, 0, 0, 1], a: {}, b: {}, ap: {}, bp: {}, wavelength: 4.50, bandwidth: 0.04 },
+      { size: 41, x0: 0, y0: 0, crval: [133.7, -7.2], crpix: [21, 21], cdelt: [-0.001, 0.001], pc: [1, 0, 0, 1], a: {}, b: {}, ap: {}, bp: {}, wavelength: 4.80, bandwidth: 0.06 },
+    ],
+    pixels: '',
+  };
+  const visitSpan = sky.frameWavelengthSpan(sampleFixture, 0, 'visits', 6);
+  assert.equal(visitSpan.exact, true);
+  assert.ok(Math.abs(visitSpan.min - 4.48) < 1e-6 && Math.abs(visitSpan.max - 4.83) < 1e-6);
+  const expSpan = sky.frameWavelengthSpan(sampleFixture, 1, 'exposures', 6);
+  assert.equal(expSpan.exact, true);
+  assert.ok(Math.abs(expSpan.min - 4.77) < 1e-6 && Math.abs(expSpan.max - 4.83) < 1e-6);
+  const nominalSpan = sky.frameWavelengthSpan({ ...sampleFixture, headers: [{ ...sampleFixture.headers[0], wavelength: undefined, bandwidth: undefined }] }, 0, 'visits', 2);
+  assert.deepEqual(nominalSpan, { min: 1.10, max: 1.65, exact: false });
+}
+
 console.log('Archive and coordinate checks passed (synthetic FITS and VOTable; no live service).');

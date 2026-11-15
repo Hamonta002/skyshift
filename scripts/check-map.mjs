@@ -138,4 +138,23 @@ assert.deepEqual(sky.parseQuery('M42'), { kind: 'name', name: 'M42' });
 assert.deepEqual(sky.parseQuery("Barnard's Star").kind, 'target');
 assert.deepEqual(sky.matchTargets('r').map((target) => target.id), ['rwaur', 'rdra']);
 
+const baseOpts = { band: 6, fov: 5, from: '', to: '' };
+assert.equal(sky.searchOptionsDiffer(baseOpts, { band: 6, fov: 5, from: '', to: '' }), false);
+assert.equal(sky.searchOptionsDiffer({ ...baseOpts, band: 5 }, baseOpts), true);
+assert.equal(sky.searchOptionsDiffer({ ...baseOpts, fov: 10 }, baseOpts), true);
+assert.equal(sky.searchOptionsDiffer({ ...baseOpts, from: '2025-05-01', to: '2025-09-01' }, baseOpts), true);
+
+const nowMs = Date.parse('2026-10-01T00:00:00Z');
+const bounded = sky.searchTimeBounds('2025-05-01', '2026-08-01', '2026-01-01T00:00:00Z', undefined, nowMs);
+assert.equal(bounded.fromMjd, Date.parse('2025-05-01T00:00:00Z') / 86400000 + 40587);
+assert.equal(bounded.toMjd, Date.parse('2026-01-01T00:00:00Z') / 86400000 + 40587);
+const defaultBounded = sky.searchTimeBounds('', '', '2026-01-01T00:00:00Z', undefined, nowMs);
+assert.equal(defaultBounded.fromMjd, 60789);
+assert.equal(defaultBounded.toMjd, Date.parse('2026-01-01T00:00:00Z') / 86400000 + 40587);
+assert.throws(() => sky.searchTimeBounds('2026-02-01', '2026-03-01', '2026-01-01T00:00:00Z', undefined, nowMs));
+
+assert.deepEqual(sky.parseWaveRange('4.41', '4.55'), [4.41, 4.55]);
+assert.equal(sky.parseWaveRange(null, '4.55'), null);
+assert.equal(sky.parseWaveRange('bad', '4.55'), null);
+
 console.log('Map projection, zoom, grid, view-state and search parsing checks passed.');

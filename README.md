@@ -7,9 +7,10 @@ available for comparison.
 
 ## Run locally
 
-Requirements: Node.js, Rust, and either the `wasm32-unknown-unknown` Rust target
-or Clang with WebAssembly support. Install the dependencies, build, and start
-the local web server:
+Use Node.js to build and serve the viewer. Building the WebAssembly kernel
+also requires Rust with the `wasm32-unknown-unknown` target, or Rust and Clang
+with WebAssembly support. When neither compiler setup is available, the viewer
+builds with the TypeScript engine.
 
 ```sh
 npm install
@@ -39,9 +40,10 @@ nominal channels of the current band from IRSA, and choosing one applies it; adj
 boundaries. Optional Gaia DR3 and
 CatWISE2020 catalogue overlays use read-only server queries. A flag decoder accepts
 a numeric value supplied by the user. The optional flag inspector can also read a
-3 × 3 FLAGS cutout for the first exposure in the current frame. It requires Astropy
-on the server: `python -m pip install astropy`. It uses bounded byte ranges and
-does not represent the quality of the entire stack. Add `embed=1` to the URL for compact display.
+3 × 3 FLAGS cutout for one exposure at the selected, tracked, or central
+position. It uses bounded byte ranges.
+Python 3 can read common FLAGS formats without Astropy. Add `embed=1` to the URL
+for compact display.
 
 Observation searches are cached in server memory. Inputs and results are cached
 in the browser where IndexedDB is available; the browser can continue without a
@@ -52,13 +54,17 @@ than the configured ones of its kind (for example `qr4/` after `qr3`, or `dr2/`)
 has the usual `level2/` image folder is searched as well. Its failures never block a
 search. The panel shows the newest image, when the archive was checked and which
 releases answered; a saved example quietly asks the archive whether newer images
-exist and offers to load them.
+exist and offers to load them. Deep-field searches look further back when the
+latest 90-day window is empty. **Earlier 90 days** loads an earlier window
+when one is available to search.
 
 ## Discover and identify
 
 - **Find movers** (or `F`) measures every source in every visit. It runs on
   its own when a field loads, and the button shows what it found; press it to
-  step through the candidates. Each candidate sets A and B to the two visits
+  step through the candidates. The **Movers & changes** panel also lets you
+  filter the candidates and select one by name when a catalogue match is
+  available. Each candidate sets A and B to the two visits
   that show it best, ready for **Blink**. A mover needs a straight-line motion
   through all its visits of at least 5σ and one pixel (3″), with steady
   brightness. The errors are calibrated on the field's own stars: a
@@ -80,6 +86,11 @@ exist and offers to load them.
   candidate", lists what it was based on. Verdicts are rules of thumb, so
   confirm them with Blink. Saturated cores are located from their masked
   pixels, and their brightness is a lower limit.
+- **Comparison star** in the field panel compares a target to a reference
+  selected from the map or catalogue. It measures flux in each exposure,
+  pairs overlapping wavelengths, and plots flux ratios and differential
+  magnitudes. Optional FLAGS checks mark contaminated apertures. The results
+  can be exported as CSV.
 - **Reports**: *Share* copies a link that reopens the view with the object
   tracked (`mark=ra,dec`). *Download report* saves the positions, motion,
   brightness and catalogue matches as JSON.
@@ -158,8 +169,9 @@ npm test
 npm run bench
 ```
 
-`npm test` includes simulated cache checks and synthetic FITS/VOTable and
-coordinate checks. `npm run bench` compares Rust/WASM and TypeScript on the
+`npm test` builds the viewer and checks caches, FITS and VOTable parsing,
+coordinates, and differential photometry. `npm run bench` requires the
+WebAssembly build and compares Rust/WASM and TypeScript on the
 pinned real fixture and on synthetic workloads. Fixture inputs and source
 metadata are in `reference/fixtures/`. See `SPHEREx_Implementation_Plan.md`
 for the full acceptance criteria.

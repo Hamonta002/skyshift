@@ -1,3 +1,7 @@
+/// <reference path="science.ts" />
+/// <reference path="coordinates.ts" />
+/// <reference path="catalogue.ts" />
+/// <reference path="map.ts" />
 namespace SkyShift {
   // Object tracking, motion fitting, mover detection and classification on
   // aligned grids. Grid pixels are zero-based with x increasing west and y
@@ -113,21 +117,49 @@ namespace SkyShift {
    * Frames where the source is not detected keep a null entry.
    */
   export function trackSource(frames: Float32Array[], side: number, start: number, x0: number, y0: number,
-    field: FieldGeometry, mjds: (number | null)[]): TrackPoint[] | null {
+    field: FieldGeometry, mjds: (number | null)[], motionHint?: { pmra?: number; pmdec?: number }): TrackPoint[] | null {
     const detect = (pixels: Float32Array, x: number, y: number, search: number) => {
       const found = measureSource(pixels, side, x, y, search);
       return found && found.snr >= 4 && found.peak >= 3 ? found : null;
     };
     const first = detect(frames[start], x0, y0, 3);
     if (!first) return null;
+    const [firstRa, firstDec] = gridToSky(field, first.x, first.y);
+    const known = (motionHint && motionHint.pmra !== undefined && motionHint.pmdec !== undefined)
+      ? motionHint
+      : findTargetAt(firstRa, firstDec, 0.005);
     const result: (Measurement | null)[] = frames.map(() => null);
     result[start] = first;
     for (const direction of [1, -1]) {
-      let seed = first;
+      let seed = first, seedFrame = start;
+      let prev: Measurement | null = null, prevFrame = -1;
       for (let frame = start + direction; frame >= 0 && frame < frames.length; frame += direction) {
-        const found = detect(frames[frame], seed.x, seed.y, 3.5);
+        let found = detect(frames[frame], seed.x, seed.y, 3.5);
+        if (!found) {
+          const mjdSeed = mjds[seedFrame] ?? null, mjdNow = mjds[frame] ?? null;
+          if (known && known.pmra !== undefined && known.pmdec !== undefined && mjdSeed !== null && mjdNow !== null) {
+            const dtYears = (mjdNow - mjdSeed) / 365.25;
+            const [seedRa, seedDec] = gridToSky(field, seed.x, seed.y);
+            const cosDec = Math.max(1e-6, Math.cos((seedDec * Math.PI) / 180));
+            const predRa = (((seedRa + (known.pmra * dtYears) / (3_600_000 * cosDec)) % 360) + 360) % 360;
+            const predDec = Math.max(-90, Math.min(90, seedDec + (known.pmdec * dtYears) / 3_600_000));
+            const [predX, predY] = fieldPixel(field, predRa, predDec);
+            found = detect(frames[frame], predX, predY, 3.5);
+          } else if (prev && prevFrame >= 0 && mjds[prevFrame] !== null && mjdSeed !== null && mjdNow !== null && Math.abs(mjdSeed - mjds[prevFrame]!) >= 10) {
+            const dtPrev = mjdSeed - mjds[prevFrame]!;
+            const dtNext = mjdNow - mjdSeed;
+            const predX = seed.x + ((seed.x - prev.x) / dtPrev) * dtNext;
+            const predY = seed.y + ((seed.y - prev.y) / dtPrev) * dtNext;
+            found = detect(frames[frame], predX, predY, 3.5);
+          }
+        }
         result[frame] = found;
-        if (found) seed = found;
+        if (found) {
+          prev = seed;
+          prevFrame = seedFrame;
+          seed = found;
+          seedFrame = frame;
+        }
       }
     }
     return result.flatMap((m, frame) => {

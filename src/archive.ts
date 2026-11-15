@@ -1,3 +1,4 @@
+/// <reference path="science.ts" />
 namespace SkyShift {
   export interface Observation {
     id: string;
@@ -11,6 +12,17 @@ namespace SkyShift {
   type Header = Record<string, string | number>;
   const bucket = "https://nasa-irsa-spherex.s3.amazonaws.com/";
   const cropCache = new Map<string, { header: ExposureHeader; pixels: Float32Array }>();
+  const cropInflight = new Map<string, Promise<{ header: ExposureHeader; pixels: Float32Array }>>();
+  interface WaveGrid { nx: number; ny: number; xs: number[]; ys: number[]; values: Float32Array; }
+  const waveCache = new Map<string, WaveGrid>();
+  const waveInflight = new Map<string, { signal: AbortSignal; promise: Promise<WaveGrid> }>();
+  const cropStore = new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open("skyshift-crops", 1);
+    request.onupgradeneeded = () => request.result.createObjectStore("crops", { keyPath: "key" });
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+    request.onblocked = () => reject(new Error("Crop cache is blocked."));
+  }).catch(() => undefined);
   const fixtureStore = new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open("skyshift-live-fixtures", 1);
     request.onupgradeneeded = () => request.result.createObjectStore("fixtures", { keyPath: "key" });
@@ -18,6 +30,64 @@ namespace SkyShift {
     request.onerror = () => reject(request.error);
     request.onblocked = () => reject(new Error("Fixture cache is blocked."));
   }).catch(() => undefined);
+
+  async function cachedCrop(key: string): Promise<{ header: ExposureHeader; pixels: Float32Array } | undefined> {
+    try {
+      const db = await cropStore;
+      if (!db) return;
+      return await new Promise((resolve) => {
+        const transaction = db.transaction("crops", "readonly");
+        const request = transaction.objectStore("crops").get(key);
+        request.onsuccess = () => {
+          const row = request.result;
+          if (!row || !(row.expires > Date.now()) || !row.header || !row.pixels) {
+            resolve(undefined);
+            return;
+          }
+          resolve({
+            header: row.header as ExposureHeader,
+            pixels: row.pixels instanceof Float32Array ? row.pixels : new Float32Array(row.pixels),
+          });
+        };
+        request.onerror = () => resolve(undefined);
+      });
+    } catch { return undefined; }
+  }
+
+  async function saveCrop(key: string, crop: { header: ExposureHeader; pixels: Float32Array }): Promise<void> {
+    try {
+      const budget = 48 * 1024 * 1024;
+      const size = crop.pixels.byteLength + 1024;
+      if (size > budget) return;
+      const db = await cropStore;
+      if (!db) return;
+      await new Promise<void>((resolve) => {
+        const transaction = db.transaction("crops", "readwrite");
+        const store = transaction.objectStore("crops");
+        const existing: { key: IDBValidKey; size: number; saved: number }[] = [];
+        const cursor = store.openCursor();
+        cursor.onsuccess = () => {
+          const row = cursor.result;
+          if (row) {
+            if (row.key !== key) existing.push({ key: row.key, size: row.value.size ?? size, saved: row.value.saved ?? 0 });
+            row.continue();
+            return;
+          }
+          existing.sort((a, b) => a.saved - b.saved);
+          let total = existing.reduce((sum, entry) => sum + entry.size, size);
+          for (const entry of existing) {
+            if (total <= budget) break;
+            store.delete(entry.key);
+            total -= entry.size;
+          }
+          store.put({ key, header: crop.header, pixels: crop.pixels, size, saved: Date.now(), expires: Date.now() + 14 * 86400000 });
+        };
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => resolve();
+        transaction.onabort = () => resolve();
+      });
+    } catch { /* Storage quota should not prevent viewing. */ }
+  }
 
   async function cachedFixture(key: string): Promise<PackedFixture | undefined> {
     try {
@@ -66,8 +136,74 @@ namespace SkyShift {
     } catch { /* Storage quota should not prevent viewing. */ }
   }
 
+  export interface CacheStats {
+    memoryCrops: number;
+    memoryCropBytes: number;
+    waveGrids: number;
+    persistentCrops: number;
+    persistentCropBytes: number;
+    liveFixtures: number;
+    liveFixtureBytes: number;
+    totalBytes: number;
+  }
+
+  export async function cacheDiagnostics(): Promise<CacheStats> {
+    let memoryCropBytes = 0;
+    for (const item of cropCache.values()) memoryCropBytes += item.pixels.byteLength + 1024;
+    let persistentCrops = 0, persistentCropBytes = 0;
+    try {
+      const db = await cropStore;
+      if (db) await new Promise<void>((resolve) => {
+        const tx = db.transaction("crops", "readonly");
+        const cursor = tx.objectStore("crops").openCursor();
+        cursor.onsuccess = () => {
+          const row = cursor.result;
+          if (!row) { resolve(); return; }
+          persistentCrops++;
+          persistentCropBytes += Number(row.value?.size ?? 0);
+          row.continue();
+        };
+        cursor.onerror = () => resolve();
+      });
+    } catch { /* ignore */ }
+    let liveFixtures = 0, liveFixtureBytes = 0;
+    try {
+      const db = await fixtureStore;
+      if (db) await new Promise<void>((resolve) => {
+        const tx = db.transaction("fixtures", "readonly");
+        const cursor = tx.objectStore("fixtures").openCursor();
+        cursor.onsuccess = () => {
+          const row = cursor.result;
+          if (!row) { resolve(); return; }
+          liveFixtures++;
+          liveFixtureBytes += Number(row.value?.size ?? 0);
+          row.continue();
+        };
+        cursor.onerror = () => resolve();
+      });
+    } catch { /* ignore */ }
+    return {
+      memoryCrops: cropCache.size,
+      memoryCropBytes,
+      waveGrids: waveCache.size,
+      persistentCrops,
+      persistentCropBytes,
+      liveFixtures,
+      liveFixtureBytes,
+      totalBytes: Math.max(memoryCropBytes, persistentCropBytes) + liveFixtureBytes,
+    };
+  }
+
   export async function clearBrowserCaches(): Promise<void> {
     cropCache.clear();
+    cropInflight.clear();
+    waveCache.clear();
+    waveInflight.clear();
+    const cdb = await cropStore;
+    if (cdb) await new Promise<void>((resolve, reject) => {
+      const tx = cdb.transaction("crops", "readwrite"); tx.objectStore("crops").clear();
+      tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error);
+    });
     const db = await fixtureStore;
     if (db) await new Promise<void>((resolve, reject) => {
       const tx = db.transaction("fixtures", "readwrite"); tx.objectStore("fixtures").clear();
@@ -80,24 +216,41 @@ namespace SkyShift {
     });
   }
 
-  async function range(key: string, start: number, end: number, signal: AbortSignal): Promise<ArrayBuffer> {
+  export function parseRetryAfterMs(headerValue: string | null | undefined, fallbackMs: number, nowMs = Date.now()): number {
+    if (!headerValue) return fallbackMs;
+    const trimmed = headerValue.trim();
+    if (/^\d+(?:\.\d+)?$/.test(trimmed)) return Math.min(15000, Math.max(0, Math.round(Number(trimmed) * 1000)));
+    const parsedDate = Date.parse(trimmed);
+    if (Number.isFinite(parsedDate)) return Math.min(15000, Math.max(0, parsedDate - nowMs));
+    return fallbackMs;
+  }
+
+  async function fetchRangeResponse(key: string, rangeHeader: string, signal: AbortSignal): Promise<Response> {
     if (!/^[a-z0-9_]+\/level2\/[a-zA-Z0-9_./-]+\.fits$/.test(key) || key.includes("..")) {
       throw new Error("Invalid archive product key.");
     }
     for (let attempt = 0; attempt < 3; attempt++) {
-      const response = await fetch(bucket + key, { headers: { Range: `bytes=${start}-${end}` }, signal });
+      if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
+      const response = await fetch(bucket + key, { headers: { Range: rangeHeader }, signal });
       if ((response.status === 429 || response.status === 503) && attempt < 2) {
-        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+        const delayMs = parseRetryAfterMs(response.headers?.get("Retry-After"), 1000 * (attempt + 1));
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
         continue;
       }
-      if (response.status !== 206) throw new Error(`Archive range request failed: ${response.status}`);
-      const contentRange = response.headers.get("Content-Range");
-      if (contentRange && !contentRange.startsWith(`bytes ${start}-${end}/`)) throw new Error("Archive returned the wrong byte range.");
-      const bytes = await response.arrayBuffer();
-      if (bytes.byteLength !== end - start + 1) throw new Error("Archive returned an incomplete range.");
-      return bytes;
+      return response;
     }
     throw new Error("Archive is busy. Try again.");
+  }
+
+  async function range(key: string, start: number, end: number, signal: AbortSignal): Promise<ArrayBuffer> {
+    const response = await fetchRangeResponse(key, `bytes=${start}-${end}`, signal);
+    if (response.status === 429 || response.status === 503) throw new Error("Archive is busy. Try again.");
+    if (response.status !== 206) throw new Error(`Archive range request failed: ${response.status}`);
+    const contentRange = response.headers.get("Content-Range");
+    if (contentRange && !contentRange.startsWith(`bytes ${start}-${end}/`)) throw new Error("Archive returned the wrong byte range.");
+    const bytes = await response.arrayBuffer();
+    if (bytes.byteLength !== end - start + 1) throw new Error("Archive returned an incomplete range.");
+    return bytes;
   }
 
   function fitsHeader(bytes: Uint8Array, start: number): { values: Header; end: number } {
@@ -130,108 +283,206 @@ namespace SkyShift {
     return result;
   }
 
-  export async function fetchExposure(item: Observation, ra: number, dec: number, fov: number, signal: AbortSignal): Promise<{
+  export async function fetchExposure(item: Observation, ra: number, dec: number, fov: number, signal: AbortSignal, useCache = true): Promise<{
     header: ExposureHeader; pixels: Float32Array;
   }> {
+    if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
     const cacheKey = `${item.productKey}:${ra}:${dec}:${fov}`;
-    const cached = cropCache.get(cacheKey);
-    if (cached) return cached;
-    let image: { values: Header; end: number } | undefined;
-    for (let length = 28800; length <= 144000; length += 28800) {
-      const bytes = new Uint8Array(await range(item.productKey, 0, length - 1, signal));
-      try {
-        const primary = fitsHeader(bytes, 0);
-        if (primary.values.NAXIS !== 0) throw new Error("Unsupported FITS primary HDU.");
-        image = fitsHeader(bytes, primary.end);
-        break;
-      } catch (error) {
-        if (!(error instanceof Error) || error.message !== "FITS header is incomplete.") throw error;
+    if (useCache) {
+      const cached = cropCache.get(cacheKey);
+      if (cached) return cached;
+      const persisted = await cachedCrop(cacheKey);
+      if (persisted) {
+        if (cropCache.size >= 120) cropCache.delete(cropCache.keys().next().value!);
+        cropCache.set(cacheKey, persisted);
+        return persisted;
       }
     }
-    if (!image) throw new Error("FITS headers exceed the supported size.");
-    const h = image.values;
-    if (h.EXTNAME !== "IMAGE" || h.BITPIX !== -32 || h.NAXIS1 !== 2040 || h.NAXIS2 !== 2040) {
-      throw new Error("Unsupported SPHEREx image layout.");
+    let pending = cropInflight.get(cacheKey);
+    if (!pending) {
+      pending = (async () => {
+        let image: { values: Header; end: number } | undefined;
+        for (let length = 28800; length <= 144000; length += 28800) {
+          const bytes = new Uint8Array(await range(item.productKey, 0, length - 1, signal));
+          try {
+            const primary = fitsHeader(bytes, 0);
+            if (primary.values.NAXIS !== 0) throw new Error("Unsupported FITS primary HDU.");
+            image = fitsHeader(bytes, primary.end);
+            break;
+          } catch (error) {
+            if (!(error instanceof Error) || error.message !== "FITS header is incomplete.") throw error;
+          }
+        }
+        if (!image) throw new Error("FITS headers exceed the supported size.");
+        const h = image.values;
+        if (h.EXTNAME !== "IMAGE" || h.BITPIX !== -32 || h.NAXIS1 !== 2040 || h.NAXIS2 !== 2040) {
+          throw new Error("Unsupported SPHEREx image layout.");
+        }
+        if ((h.CTYPE1 !== undefined && h.CTYPE1 !== "RA---TAN-SIP" && h.CTYPE1 !== "RA---TAN")
+          || (h.CTYPE2 !== undefined && h.CTYPE2 !== "DEC--TAN-SIP" && h.CTYPE2 !== "DEC--TAN")
+          || ["A_ORDER", "B_ORDER", "AP_ORDER", "BP_ORDER"].some((key) => typeof h[key] === "number" && Number(h[key]) > 3)) {
+          throw new Error("Unsupported FITS sky projection or SIP order.");
+        }
+        const n = (key: string, fallback?: number): number => {
+          const value = h[key];
+          if (typeof value === "number") return value;
+          if (fallback !== undefined) return fallback;
+          throw new Error(`FITS header missing ${key}.`);
+        };
+        const half = Math.ceil(fov * 60 / 6.15 * Math.SQRT2 / 2) + 3;
+        const header: ExposureHeader = {
+          size: 2 * half + 1, x0: 0, y0: 0,
+          productKey: item.productKey,
+          mjd: n("MJD-AVG", (item.startMjd + item.endMjd) / 2),
+          crval: [n("CRVAL1"), n("CRVAL2")], crpix: [n("CRPIX1"), n("CRPIX2")],
+          pc: [n("PC1_1", 1), n("PC1_2", 0), n("PC2_1", 0), n("PC2_2", 1)],
+          cdelt: [n("CDELT1"), n("CDELT2")],
+          a: coefficients(h, "A"), b: coefficients(h, "B"), ap: coefficients(h, "AP"), bp: coefficients(h, "BP"),
+        };
+        const determinant = header.pc[0] * header.pc[3] - header.pc[1] * header.pc[2];
+        if (!header.cdelt[0] || !header.cdelt[1] || !Number.isFinite(determinant) || Math.abs(determinant) < 1e-12) {
+          throw new Error("FITS celestial transform is singular.");
+        }
+        const [x, y] = worldToPixel(packWcs(header), ra, dec);
+        header.x0 = Math.round(x) - half;
+        header.y0 = Math.round(y) - half;
+        const x0 = Math.max(0, header.x0), y0 = Math.max(0, header.y0);
+        const x1 = Math.min(2039, header.x0 + header.size - 1), y1 = Math.min(2039, header.y0 + header.size - 1);
+        const pixels = new Float32Array(header.size ** 2).fill(NaN);
+        if (x0 > x1 || y0 > y1) return { header, pixels };
+        const first = image.end + 4 * (y0 * 2040 + x0);
+        const last = image.end + 4 * (y1 * 2040 + x1) + 3;
+        const raw = new DataView(await range(item.productKey, first, last, signal));
+        const scale = n("BSCALE", 1), zero = n("BZERO", 0);
+        for (let py = y0; py <= y1; py++) for (let px = x0; px <= x1; px++) {
+          const source = 4 * ((py - y0) * 2040 + px - x0);
+          pixels[(py - header.y0) * header.size + px - header.x0] = raw.getFloat32(source, false) * scale + zero;
+        }
+        const result = { header, pixels };
+        if (useCache) {
+          if (cropCache.size >= 120) cropCache.delete(cropCache.keys().next().value!);
+          cropCache.set(cacheKey, result);
+          await saveCrop(cacheKey, result);
+        }
+        return result;
+      })().finally(() => cropInflight.delete(cacheKey));
+      cropInflight.set(cacheKey, pending);
     }
-    if ((h.CTYPE1 !== undefined && h.CTYPE1 !== "RA---TAN-SIP" && h.CTYPE1 !== "RA---TAN")
-      || (h.CTYPE2 !== undefined && h.CTYPE2 !== "DEC--TAN-SIP" && h.CTYPE2 !== "DEC--TAN")
-      || ["A_ORDER", "B_ORDER", "AP_ORDER", "BP_ORDER"].some((key) => typeof h[key] === "number" && Number(h[key]) > 3)) {
-      throw new Error("Unsupported FITS sky projection or SIP order.");
+    const resolved = await pending;
+    if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
+    return resolved;
+  }
+
+  function waveCacheKey(productKey: string): string {
+    const release = /^([a-z0-9_]+)\/level2\//.exec(productKey)?.[1];
+    const detMatch = /(?:\/([1-6])\/[^/]+|_D([1-6])_)[^/]*\.fits$/.exec(productKey);
+    const detector = detMatch?.[1] ?? detMatch?.[2];
+    return release && detector ? `${release}:D${detector}` : productKey;
+  }
+
+  async function loadWaveGrid(productKey: string, signal: AbortSignal): Promise<WaveGrid> {
+    if (!/^[a-z0-9_]+\/level2\/[a-zA-Z0-9_./-]+\.fits$/.test(productKey) || productKey.includes("..")) {
+      throw new Error("Invalid archive product key.");
     }
-    const n = (key: string, fallback?: number): number => {
-      const value = h[key];
-      if (typeof value === "number") return value;
-      if (fallback !== undefined) return fallback;
-      throw new Error(`FITS header missing ${key}.`);
-    };
-    const half = Math.ceil(fov * 60 / 6.15 * Math.SQRT2 / 2) + 3;
-    const header: ExposureHeader = {
-      size: 2 * half + 1, x0: 0, y0: 0,
-      productKey: item.productKey,
-      mjd: n("MJD-AVG", (item.startMjd + item.endMjd) / 2),
-      crval: [n("CRVAL1"), n("CRVAL2")], crpix: [n("CRPIX1"), n("CRPIX2")],
-      pc: [n("PC1_1", 1), n("PC1_2", 0), n("PC2_1", 0), n("PC2_2", 1)],
-      cdelt: [n("CDELT1"), n("CDELT2")],
-      a: coefficients(h, "A"), b: coefficients(h, "B"), ap: coefficients(h, "AP"), bp: coefficients(h, "BP"),
-    };
-    const determinant = header.pc[0] * header.pc[3] - header.pc[1] * header.pc[2];
-    if (!header.cdelt[0] || !header.cdelt[1] || !Number.isFinite(determinant) || Math.abs(determinant) < 1e-12) {
-      throw new Error("FITS celestial transform is singular.");
-    }
-    const [x, y] = worldToPixel(packWcs(header), ra, dec);
-    header.x0 = Math.round(x) - half;
-    header.y0 = Math.round(y) - half;
-    const x0 = Math.max(0, header.x0), y0 = Math.max(0, header.y0);
-    const x1 = Math.min(2039, header.x0 + header.size - 1), y1 = Math.min(2039, header.y0 + header.size - 1);
-    const pixels = new Float32Array(header.size ** 2).fill(NaN);
-    if (x0 > x1 || y0 > y1) return { header, pixels };
-    const first = image.end + 4 * (y0 * 2040 + x0);
-    const last = image.end + 4 * (y1 * 2040 + x1) + 3;
-    const raw = new DataView(await range(item.productKey, first, last, signal));
-    const scale = n("BSCALE", 1), zero = n("BZERO", 0);
-    for (let py = y0; py <= y1; py++) for (let px = x0; px <= x1; px++) {
-      const source = 4 * ((py - y0) * 2040 + px - x0);
-      pixels[(py - header.y0) * header.size + px - header.x0] = raw.getFloat32(source, false) * scale + zero;
-    }
-    const result = { header, pixels };
-    if (cropCache.size >= 120) cropCache.delete(cropCache.keys().next().value!);
-    cropCache.set(cacheKey, result);
-    return result;
+    const key = waveCacheKey(productKey);
+    const cached = waveCache.get(key);
+    if (cached) return cached;
+    const pending = waveInflight.get(key);
+    if (pending?.signal === signal) return pending.promise;
+    const promise = (async () => {
+      const response = await fetchRangeResponse(productKey, "bytes=-5760", signal);
+      if (response.status !== 206) throw new Error("Wavelength lookup could not be downloaded.");
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.length !== 5760) throw new Error("Unexpected wavelength lookup size.");
+      const table = fitsHeader(bytes, 0);
+      if (table.values.EXTNAME !== "WCS-WAVE") throw new Error("Unsupported wavelength lookup layout.");
+      const nx = parseInt(String(table.values.TFORM1), 10), ny = parseInt(String(table.values.TFORM2), 10);
+      if (!(nx >= 2 && ny >= 2 && 4 * (nx + ny) + 8 * nx * ny <= bytes.length - table.end)) {
+        throw new Error("Invalid wavelength lookup dimensions.");
+      }
+      const data = new DataView(bytes.buffer, bytes.byteOffset + table.end);
+      const xs = Array.from({ length: nx }, (_, i) => data.getInt32(i * 4, false));
+      const ys = Array.from({ length: ny }, (_, i) => data.getInt32((nx + i) * 4, false));
+      const base = 4 * (nx + ny);
+      const values = new Float32Array(2 * nx * ny);
+      for (let i = 0; i < values.length; i++) values[i] = data.getFloat32(base + i * 4, false);
+      return { nx, ny, xs, ys, values };
+    })().then((grid) => {
+      if (waveInflight.get(key)?.promise === promise) waveCache.set(key, grid);
+      return grid;
+    }).finally(() => {
+      if (waveInflight.get(key)?.promise === promise) waveInflight.delete(key);
+    });
+    waveInflight.set(key, { signal, promise });
+    return promise;
   }
 
   export async function fetchWavelength(header: ExposureHeader, x: number, y: number, signal: AbortSignal): Promise<[number, number]> {
     if (header.wavelength !== undefined && header.bandwidth !== undefined) return [header.wavelength, header.bandwidth];
     if (!header.productKey) throw new Error("Wavelength metadata is unavailable.");
-    const response = await fetch(bucket + header.productKey, { headers: { Range: "bytes=-5760" }, signal });
-    if (response.status !== 206) throw new Error("Wavelength lookup could not be downloaded.");
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.length !== 5760) throw new Error("Unexpected wavelength lookup size.");
-    const table = fitsHeader(bytes, 0);
-    if (table.values.EXTNAME !== "WCS-WAVE") throw new Error("Unsupported wavelength lookup layout.");
-    const nx = parseInt(String(table.values.TFORM1), 10), ny = parseInt(String(table.values.TFORM2), 10);
-    if (!(nx >= 2 && ny >= 2 && 4 * (nx + ny) + 8 * nx * ny <= bytes.length - table.end)) {
-      throw new Error("Invalid wavelength lookup dimensions.");
-    }
-    const data = new DataView(bytes.buffer, bytes.byteOffset + table.end);
-    const xs = Array.from({ length: nx }, (_, i) => data.getInt32(i * 4, false));
-    const ys = Array.from({ length: ny }, (_, i) => data.getInt32((nx + i) * 4, false));
+    if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
+    const grid = await loadWaveGrid(header.productKey, signal);
+    const { nx, xs, ys, values } = grid;
     const find = (axis: number[], position: number) => Math.max(0, Math.min(axis.length - 2, axis.findIndex((value) => value >= position) - 1 < 0
       ? (position > axis[axis.length - 1] ? axis.length - 2 : 0) : axis.findIndex((value) => value >= position) - 1));
     const ix = find(xs, x + 1), iy = find(ys, y + 1);
     const tx = (x + 1 - xs[ix]) / (xs[ix + 1] - xs[ix]);
     const ty = (y + 1 - ys[iy]) / (ys[iy + 1] - ys[iy]);
-    const base = 4 * (nx + ny);
-    const v = (px: number, py: number, column: number) => data.getFloat32(base + 8 * (py * nx + px) + column * 4, false);
+    const v = (px: number, py: number, column: number) => values[2 * (py * nx + px) + column];
     const interpolate = (column: number) => v(ix, iy, column) * (1 - tx) * (1 - ty)
       + v(ix + 1, iy, column) * tx * (1 - ty) + v(ix, iy + 1, column) * (1 - tx) * ty
       + v(ix + 1, iy + 1, column) * tx * ty;
     return [interpolate(0), interpolate(1)];
   }
 
-  export async function makeLiveFixture(
-    observations: Observation[], ra: number, dec: number, fov: number,
-    signal: AbortSignal, progress: (done: number, total: number) => void, useCache = true,
-  ): Promise<PackedFixture> {
+  const BAND_PASSBANDS: Record<number, [number, number]> = {
+    1: [0.75, 1.12],
+    2: [1.10, 1.65],
+    3: [1.63, 2.43],
+    4: [2.40, 3.85],
+    5: [3.81, 4.43],
+    6: [4.41, 5.01],
+  };
+
+  export function frameWavelengthSpan(
+    fixture: PackedFixture,
+    frame: number,
+    frameMode: "visits" | "exposures",
+    band?: number,
+  ): { min: number; max: number; exact: boolean } | null {
+    let headers: ExposureHeader[] = [];
+    if (frameMode === "exposures") {
+      const h = fixture.headers[frame];
+      if (h) headers = [h];
+    } else {
+      const start = fixture.visitSizes.slice(0, frame).reduce((a, b) => a + b, 0);
+      const count = fixture.visitSizes[frame] ?? 0;
+      headers = fixture.headers.slice(start, start + count);
+    }
+    const mins: number[] = [], maxs: number[] = [];
+    for (const h of headers) {
+      if (h.wavelength !== undefined && Number.isFinite(h.wavelength)) {
+        const halfBw = h.bandwidth !== undefined && Number.isFinite(h.bandwidth) ? h.bandwidth / 2 : 0;
+        mins.push(h.wavelength - halfBw);
+        maxs.push(h.wavelength + halfBw);
+      }
+    }
+    if (mins.length && maxs.length) {
+      return { min: Math.min(...mins), max: Math.max(...maxs), exact: true };
+    }
+    if (band !== undefined && BAND_PASSBANDS[band]) {
+      const [min, max] = BAND_PASSBANDS[band];
+      return { min, max, exact: false };
+    }
+    return null;
+  }
+
+  function selectLiveVisits(observations: Observation[], fov: number): {
+    visits: Observation[][];
+    selected: Observation[][];
+    perExposureBytes: number;
+    maximum: number;
+  } {
     // A given exposure can be returned in several collections or reprocessed.
     // Prefer a known newer processing version/date; keep unknown versions distinct.
     const chosen = new Map<string, Observation>();
@@ -253,12 +504,56 @@ namespace SkyShift {
       if (!current || observation.startMjd - current[current.length - 1].startMjd > 40 || deepMonthChanged) visits.push([observation]);
       else current.push(observation);
     }
+    const perExposureBytes = 28800 + Math.ceil(fov * 60 / 6.15 * Math.SQRT2 + 6) * 8160;
+    const maximum = Math.max(1, Math.min(60, Math.floor(32 * 1024 * 1024 / perExposureBytes)));
+    if (!visits.length) return { visits: [], selected: [], perExposureBytes, maximum };
+    const keptVisits = visits.length <= maximum
+      ? visits
+      : maximum === 1
+        ? [visits[0]]
+        : Array.from({ length: maximum }, (_, i) => visits[Math.round(i * (visits.length - 1) / (maximum - 1))]);
+    const perVisit = Math.max(1, Math.floor(maximum / keptVisits.length));
+    const selected = keptVisits.map((visit) => visit.filter((_, i) => i % Math.max(1, Math.ceil(visit.length / perVisit)) === 0).slice(0, perVisit));
+    return { visits, selected, perExposureBytes, maximum };
+  }
+
+  export function estimateDownloadBytes(observations: Observation[], fov: number): {
+    perExposureBytes: number;
+    selectedExposures: number;
+    totalVisits: number;
+    keptVisits: number;
+    totalBytes: number;
+    maximumExposures: number;
+  } {
+    const { visits, selected, perExposureBytes, maximum } = selectLiveVisits(observations, fov);
+    if (!observations.length) {
+      const typicalExposures = Math.min(30, maximum);
+      return {
+        perExposureBytes,
+        selectedExposures: typicalExposures,
+        totalVisits: 3,
+        keptVisits: Math.min(3, maximum),
+        totalBytes: typicalExposures * perExposureBytes,
+        maximumExposures: maximum,
+      };
+    }
+    const selectedExposures = selected.reduce((sum, visit) => sum + visit.length, 0);
+    return {
+      perExposureBytes,
+      selectedExposures,
+      totalVisits: visits.length,
+      keptVisits: selected.length,
+      totalBytes: selectedExposures * perExposureBytes,
+      maximumExposures: maximum,
+    };
+  }
+
+  export async function makeLiveFixture(
+    observations: Observation[], ra: number, dec: number, fov: number,
+    signal: AbortSignal, progress: (done: number, total: number) => void, useCache = true,
+  ): Promise<PackedFixture> {
+    const { visits, selected } = selectLiveVisits(observations, fov);
     if (!visits.length) throw new Error("No observations cover this field.");
-    const estimatedBytes = 28800 + Math.ceil(fov * 60 / 6.15 * Math.SQRT2 + 6) * 8160;
-    const maximum = Math.min(60, Math.floor(32 * 1024 * 1024 / estimatedBytes));
-    if (visits.length > maximum) throw new Error("Too many visits for the initial download. Choose a smaller field.");
-    const perVisit = Math.max(1, Math.floor(maximum / visits.length));
-    const selected = visits.map((visit) => visit.filter((_, i) => i % Math.max(1, Math.ceil(visit.length / perVisit)) === 0).slice(0, perVisit));
     const cacheKey = JSON.stringify({ version: 1, ra, dec, fov, inputs: selected.map((visit) => visit.map((item) => item.productKey)) });
     const saved = useCache ? await cachedFixture(cacheKey) : undefined;
     if (saved) return saved;
@@ -271,7 +566,7 @@ namespace SkyShift {
       while (next < jobs.length) {
         if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
         const job = jobs[next++];
-        results[job.visitIndex][job.frameIndex] = await fetchExposure(job.item, ra, dec, fov, signal);
+        results[job.visitIndex][job.frameIndex] = await fetchExposure(job.item, ra, dec, fov, signal, useCache);
         progress(++done, total);
       }
     };

@@ -1,3 +1,6 @@
+/// <reference path="science.ts" />
+/// <reference path="coordinates.ts" />
+/// <reference path="archive.ts" />
 namespace SkyShift {
   // SPHEREx image bit assignments documented by IRSA; unknown bits stay visible.
   export function decodeQualityFlags(value: number): string[] {
@@ -36,57 +39,296 @@ namespace SkyShift {
     return { fixture: { ...fixture, id: `${fixture.id}:wave:${min}:${max}`, dates, visitSizes, headers: selected.map((item) => item.header), pixels: btoa(binary) }, unavailable };
   }
   export interface SpectrumPoint {
-    wavelength: number; bandwidth: number; flux: number; surfaceBrightness: number;
-    date: string; mjd: number | null; productKey: string | null; wavelengthAtReferencePosition: boolean;
+    wavelength: number;
+    bandwidth: number;
+    flux: number;
+    surfaceBrightness: number;
+    error: number;
+    visit: number;
+    date: string;
+    mjd: number | null;
+    productKey: string | null;
+    saturated: boolean;
+    mode: "aperture" | "ring";
+    wavelengthAtReferencePosition: boolean;
   }
-  type SpectrumPosition = { ra: number; dec: number };
-  export type SpectrumTarget = SpectrumPosition | ((visit: number, exposure: number) => SpectrumPosition | undefined);
 
-  export async function quickSpectrum(fixture: PackedFixture, signal: AbortSignal, target?: SpectrumTarget): Promise<SpectrumPoint[]> {
+  export interface SpectrumTarget {
+    label?: string;
+    ra: number;
+    dec: number;
+    raJ2000?: number;
+    decJ2000?: number;
+    pmra?: number;
+    pmdec?: number;
+    epoch?: number;
+  }
+
+  export interface SpectrumBinComparison {
+    minWave: number;
+    maxWave: number;
+    visits: { visit: number; date: string; medianFlux: number | null; count: number }[];
+    ratioMaxMin: number | null;
+    deltaMag: number | null;
+  }
+
+  export interface SpectrumComparison {
+    mode: "aperture" | "ring";
+    bins: SpectrumBinComparison[];
+    medianDeltaMag: number | null;
+    maxDeltaMag: number | null;
+    summary: string;
+  }
+
+  function arrayMedian(values: number[]): number {
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = sorted.length >> 1;
+    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+
+  function arrayQuantile(sorted: number[], q: number): number {
+    if (!sorted.length) return NaN;
+    const pos = Math.max(0, Math.min(sorted.length - 1, q * (sorted.length - 1)));
+    const lo = Math.floor(pos), hi = Math.ceil(pos), t = pos - lo;
+    return sorted[lo] * (1 - t) + sorted[hi] * t;
+  }
+
+  export function resolveSpectrumTarget(
+    fixture: PackedFixture,
+    currentTargetId?: string,
+    tracked?: {
+      start: { ra: number; dec: number; frame: number };
+      points: { frame: number; ra: number; dec: number; mjd: number | null }[];
+      motion?: { significant: boolean; east: number; north: number } | null;
+      id?: {
+        simbad: { matches: { name: string; pmra: number | null; pmdec: number | null }[] };
+        gaia: { matches: { pmra: number | null; pmdec: number | null }[] };
+      } | null;
+    } | null,
+    selected?: SpectrumTarget | null,
+  ): SpectrumTarget {
+    if (tracked && tracked.points.length) {
+      const at = tracked.points.find((p) => p.frame === tracked.start.frame) ?? tracked.points[0];
+      const known = findTargetAt(at.ra, at.dec, 8 / 3600, at.mjd ?? undefined);
+      if (known) return known;
+      const gaia = tracked.id?.gaia.matches[0];
+      const simbad = tracked.id?.simbad.matches[0];
+      const pmra = gaia?.pmra ?? simbad?.pmra ?? (tracked.motion?.significant ? tracked.motion.east * 1000 : 0);
+      const pmdec = gaia?.pmdec ?? simbad?.pmdec ?? (tracked.motion?.significant ? tracked.motion.north * 1000 : 0);
+      const epoch = at.mjd !== null ? mjdToJulianYear(at.mjd) : 2026.0;
+      return {
+        label: simbad?.name ?? "tracked source",
+        ra: at.ra,
+        dec: at.dec,
+        pmra,
+        pmdec,
+        epoch,
+      };
+    }
+    if (selected) {
+      return {
+        ...selected,
+        label: selected.label ?? `${selected.ra.toFixed(5)}°, ${selected.dec.toFixed(5)}°`,
+      };
+    }
+    const named = (currentTargetId ? TARGETS.find((item) => item.id === currentTargetId) : undefined)
+      ?? findTargetAt(fixture.ra0, fixture.dec0);
+    if (named) return named;
+    return { label: "field centre", ra: fixture.ra0, dec: fixture.dec0 };
+  }
+
+  /** Per-exposure aperture photometry outcome at one crop position. */
+  export interface ApertureMeasurement {
+    /** "aperture": clean 2.5 px aperture; "ring": 3–6 px wing estimate for a blanked core;
+     *  "edge": too close to the crop edge; "no-sky": < 30 finite sky pixels;
+     *  "blank-core": core blanked and too few finite wing pixels for a ring estimate. */
+    status: "aperture" | "ring" | "edge" | "no-sky" | "blank-core";
+    /** Flux in Jy, or null when no valid measurement exists (never 0 as a placeholder). */
+    flux: number | null;
+    error: number | null;
+    surfaceBrightness: number | null;
+    /** Crop-pixel position used (refined centroid when adopted). */
+    x: number;
+    y: number;
+    snr: number | null;
+    nanCore: number;
+    skyPixels: number;
+  }
+
+  export const SPHEREX_PIXEL_SR = 37.86 * (Math.PI / 648000) ** 2;
+
+  /**
+   * Quick-look photometry matching reference/measure_frames.py: median sky in an
+   * 8–14 px annulus with 1.4826·MAD noise, 8-iteration flux-weighted centroid in
+   * r ≤ 2.5 px, 2.5 px aperture sum (no aperture correction), and a 3–6 px ring
+   * fallback when the core contains blanked (saturated) pixels.
+   */
+  export function measureApertureAt(pixels: Float32Array, size: number, cx: number, cy: number): ApertureMeasurement {
+    const solidAngle = SPHEREX_PIXEL_SR;
+    const empty = (status: ApertureMeasurement["status"], nanCore = 0, skyPixels = 0): ApertureMeasurement =>
+      ({ status, flux: null, error: null, surfaceBrightness: null, x: cx, y: cy, snr: null, nanCore, skyPixels });
+    if (!(cx >= 4 && cy >= 4 && cx < size - 4 && cy < size - 4)) return empty("edge");
+    const sky: number[] = [];
+    let nanCore = 0;
+    for (let py = Math.max(0, Math.ceil(cy - 14)); py < size && py < cy + 14; py++)
+      for (let px = Math.max(0, Math.ceil(cx - 14)); px < size && px < cx + 14; px++) {
+      const radius = Math.hypot(px - cx, py - cy);
+      const value = pixels[py * size + px];
+      if (radius <= 2.5 && !Number.isFinite(value)) nanCore++;
+      else if (radius > 8 && radius < 14 && Number.isFinite(value)) sky.push(value);
+    }
+    if (sky.length < 30) return empty("no-sky", nanCore, sky.length);
+    const background = arrayMedian(sky);
+    const mad = Math.max(1.4826 * arrayMedian(sky.map((v) => Math.abs(v - background))), 1e-9);
+    if (nanCore === 0) {
+      let tx = cx, ty = cy;
+      for (let iter = 0; iter < 8; iter++) {
+        let wSum = 0, wx = 0, wy = 0;
+        for (let py = Math.max(0, Math.ceil(ty - 2.5)); py < size && py <= ty + 2.5; py++)
+          for (let px = Math.max(0, Math.ceil(tx - 2.5)); px < size && px <= tx + 2.5; px++) {
+          if (Math.hypot(px - tx, py - ty) <= 2.5) {
+            const value = pixels[py * size + px];
+            if (Number.isFinite(value) && value - background > 0) {
+              const w = value - background;
+              wSum += w; wx += px * w; wy += py * w;
+            }
+          }
+        }
+        if (wSum <= 0) break;
+        tx = wx / wSum; ty = wy / wSum;
+      }
+      const evalAperture = (ax: number, ay: number) => {
+        const vals: number[] = [];
+        let hasNan = false;
+        for (let py = Math.max(0, Math.ceil(ay - 2.5)); py < size && py <= ay + 2.5; py++)
+          for (let px = Math.max(0, Math.ceil(ax - 2.5)); px < size && px <= ax + 2.5; px++) {
+          if (Math.hypot(px - ax, py - ay) <= 2.5) {
+            const value = pixels[py * size + px];
+            if (!Number.isFinite(value)) hasNan = true;
+            else vals.push(value - background);
+          }
+        }
+        const sum = vals.reduce((a, b) => a + b, 0);
+        const snr = vals.length ? sum / (mad * Math.sqrt(vals.length)) : 0;
+        return { vals, hasNan, sum, snr, x: ax, y: ay };
+      };
+      // Only adopt the refined centroid when signal-to-noise is solid and the core stays finite.
+      const refined = Math.hypot(tx - cx, ty - cy) <= 2.0 ? evalAperture(tx, ty) : null;
+      const chosen = refined && !refined.hasNan && refined.snr >= 5 ? refined : evalAperture(cx, cy);
+      if (!chosen.hasNan && chosen.vals.length >= 10) {
+        return {
+          status: "aperture",
+          flux: chosen.sum * solidAngle * 1e6,
+          error: mad * Math.sqrt(chosen.vals.length) * solidAngle * 1e6,
+          surfaceBrightness: chosen.sum / chosen.vals.length,
+          x: chosen.x, y: chosen.y, snr: chosen.snr, nanCore: 0, skyPixels: sky.length,
+        };
+      }
+      nanCore = Math.max(nanCore, 1);
+    }
+    // Saturated/blanked core fallback: 3-6 px PSF wing annulus (matching reference/measure_frames.py --wing).
+    let wingTotal = 0, wingValid = 0, wingSum = 0;
+    for (let py = Math.max(0, Math.ceil(cy - 6)); py < size && py <= cy + 6; py++)
+      for (let px = Math.max(0, Math.ceil(cx - 6)); px < size && px <= cx + 6; px++) {
+      const radius = Math.hypot(px - cx, py - cy);
+      if (radius > 3 && radius <= 6) {
+        wingTotal++;
+        const value = pixels[py * size + px];
+        if (Number.isFinite(value)) { wingSum += value - background; wingValid++; }
+      }
+    }
+    if (wingTotal < 10 || wingValid <= 0.7 * wingTotal) return empty("blank-core", nanCore, sky.length);
+    const flux = (wingSum / wingValid) * wingTotal * solidAngle * 1e6;
+    const error = mad * Math.sqrt(wingTotal) * solidAngle * 1e6;
+    return { status: "ring", flux, error, surfaceBrightness: wingSum / wingValid, x: cx, y: cy, snr: flux / error, nanCore, skyPixels: sky.length };
+  }
+
+  /** Aperture centre for one exposure, propagated with proper motion when available. */
+  export function exposureSkyPosition(target: SpectrumTarget, mjd: number | undefined): [number, number] {
+    if (mjd === undefined || target.pmra === undefined || target.pmdec === undefined) return [target.ra, target.dec];
+    return targetPosition({
+      ra: target.ra, dec: target.dec, raJ2000: target.raJ2000, decJ2000: target.decJ2000,
+      pmra: target.pmra, pmdec: target.pmdec, epoch: target.epoch,
+    }, mjd);
+  }
+
+  type SpectrumPositionForExposure = (visit: number, exposure: number) => SpectrumTarget | undefined;
+  export async function quickSpectrum(
+    fixture: PackedFixture, signal: AbortSignal, target?: SpectrumTarget | SpectrumPositionForExposure,
+  ): Promise<SpectrumPoint[]> {
     const exposures = decodeFixture(fixture);
     const result: SpectrumPoint[] = [];
+    const defaultPosition = findTargetAt(fixture.ra0, fixture.dec0) ?? { ra: fixture.ra0, dec: fixture.dec0 };
     let index = 0;
     for (let visit = 0; visit < fixture.visitSizes.length; visit++) {
       for (let i = 0; i < fixture.visitSizes[visit]; i++, index++) {
         if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
         const exposure = exposures[index], h = exposure.header;
-        const position = typeof target === "function" ? target(visit, index) : target;
-        if (target && !position) continue;
-        let ra = position?.ra ?? fixture.ra0, dec = position?.dec ?? fixture.dec0;
-        if (!target && Math.abs(ra - 133.759765) < 1e-5 && Math.abs(dec + 7.242186) < 1e-5 && h.mjd !== undefined) {
-          const year = 2000 + (h.mjd - 51544.5) / 365.25;
-          ra += (year - 2026) * -8123.7 / 3600000 / Math.cos(dec * Math.PI / 180);
-          dec += (year - 2026) * 673.2 / 3600000;
-        }
+        const position = typeof target === "function" ? target(visit, index) : (target ?? defaultPosition);
+        if (!position) continue;
+        const [ra, dec] = exposureSkyPosition(position, h.mjd);
         const [x, y] = worldToPixel(exposure.wcs, ra, dec);
-        const cx = x - h.x0, cy = y - h.y0;
-        if (!(cx >= 14 && cy >= 14 && cx < h.size - 14 && cy < h.size - 14)) continue;
-        const sky: number[] = [], aperture: number[] = [];
-        let incomplete = false;
-        for (let py = Math.ceil(cy - 14); py <= cy + 14; py++) for (let px = Math.ceil(cx - 14); px <= cx + 14; px++) {
-          const radius = Math.hypot(px - cx, py - cy);
-          const value = exposure.pixels[py * h.size + px];
-          if (radius <= 2.5) {
-            if (!Number.isFinite(value)) incomplete = true;
-            else aperture.push(value);
-          } else if (radius > 8 && radius < 14 && Number.isFinite(value)) sky.push(value);
-        }
-        if (incomplete || aperture.length < 10 || sky.length < 30) continue;
-        sky.sort((a, b) => a - b);
-        const background = sky[Math.floor(sky.length / 2)];
+        const m = measureApertureAt(exposure.pixels, h.size, x - h.x0, y - h.y0);
+        if (m.flux === null || m.error === null || m.surfaceBrightness === null) continue;
         let wavelength: number, bandwidth: number;
-        try { [wavelength, bandwidth] = await fetchWavelength(h, x, y, signal); }
-        catch (error) { if (signal.aborted) throw error; continue; }
+        try { [wavelength, bandwidth] = await fetchWavelength(h, m.x + h.x0, m.y + h.y0, signal); }
+        catch (err) { if (signal.aborted) throw err; continue; }
         if (!Number.isFinite(wavelength) || !Number.isFinite(bandwidth) || bandwidth <= 0) continue;
-        const solidAngle = 37.86 * (Math.PI / 648000) ** 2;
-        const signalSum = aperture.reduce((sum, value) => sum + (value - background), 0);
         result.push({
-          wavelength, bandwidth, flux: signalSum * solidAngle * 1e6, surfaceBrightness: signalSum / aperture.length,
-          date: fixture.dates[visit], mjd: h.mjd ?? null, productKey: h.productKey ?? null,
+          wavelength,
+          bandwidth,
+          flux: m.flux,
+          error: m.error,
+          surfaceBrightness: m.surfaceBrightness,
+          visit,
+          date: fixture.dates[visit] ?? `Visit ${visit + 1}`,
+          mjd: h.mjd ?? null,
+          productKey: h.productKey ?? null,
+          saturated: m.status === "ring",
+          mode: m.status === "ring" ? "ring" : "aperture",
           wavelengthAtReferencePosition: h.wavelength !== undefined && h.bandwidth !== undefined,
         });
       }
     }
     return result.sort((a, b) => a.wavelength - b.wavelength);
+  }
+
+  export function compareSpectrumVisits(points: SpectrumPoint[], dates: string[]): SpectrumComparison {
+    const clean = points.filter((p) => p.mode === "aperture");
+    const ring = points.filter((p) => p.mode === "ring");
+    const useRing = clean.length < 6 && ring.length > clean.length;
+    const mode: "aperture" | "ring" = useRing ? "ring" : "aperture";
+    const subset = useRing ? ring : (clean.length ? clean : points);
+    if (subset.length < 3 || dates.length < 2) {
+      return { mode, bins: [], medianDeltaMag: null, maxDeltaMag: null, summary: "" };
+    }
+    const waves = subset.map((p) => p.wavelength).sort((a, b) => a - b);
+    const edges = [0, 1 / 3, 2 / 3, 1].map((q) => arrayQuantile(waves, q));
+    const bins: SpectrumBinComparison[] = [];
+    for (let i = 0; i < 3; i++) {
+      const minWave = edges[i], maxWave = edges[i + 1];
+      const visits = dates.map((date, visit) => {
+        const vals = subset
+          .filter((p) => p.visit === visit && p.wavelength >= minWave && p.wavelength <= maxWave)
+          .map((p) => p.flux);
+        return { visit, date, medianFlux: vals.length ? arrayMedian(vals) : null, count: vals.length };
+      });
+      const pos = visits.map((v) => v.medianFlux).filter((v): v is number => v !== null && v > 0);
+      const ratioMaxMin = pos.length >= 2 ? Math.max(...pos) / Math.min(...pos) : null;
+      const deltaMag = ratioMaxMin !== null ? 2.5 * Math.log10(ratioMaxMin) : null;
+      bins.push({ minWave, maxWave, visits, ratioMaxMin, deltaMag });
+    }
+    const validDeltas = bins.map((b) => b.deltaMag).filter((d): d is number => d !== null && Number.isFinite(d));
+    const medianDeltaMag = validDeltas.length ? arrayMedian(validDeltas) : null;
+    const maxDeltaMag = validDeltas.length ? Math.max(...validDeltas) : null;
+    const formatFlux = (v: number) => Math.abs(v) >= 0.1 ? v.toFixed(2) : (v * 1e3).toFixed(2) + " m";
+    const binText = bins.map((b) => {
+      const seriesText = b.visits.map((v) => v.medianFlux !== null ? `${formatFlux(v.medianFlux)}[${v.count}]` : "–").join(" → ");
+      return `${b.minWave.toFixed(2)}–${b.maxWave.toFixed(2)} μm: ${seriesText}`;
+    }).join(" · ");
+    const summary = validDeltas.length
+      ? `Matched-wavelength visit medians (${mode === "ring" ? "3–6 px ring Jy" : "2.5 px aperture Jy"}): ${binText} (median Δm = ${medianDeltaMag!.toFixed(2)} mag).`
+      : `Matched-wavelength visit medians: ${binText}.`;
+    return { mode, bins, medianDeltaMag, maxDeltaMag, summary };
   }
 }

@@ -73,13 +73,64 @@ namespace SkyShift {
     ra: number;
     dec: number;
     band: number;
+    raJ2000?: number;
+    decJ2000?: number;
+    pmra?: number;
+    pmdec?: number;
+    epoch?: number;
   }
 
   export const TARGETS: Target[] = [
-    { id: "wise0855", label: "WISE 0855", ra: 133.759765, dec: -7.242186, band: 6 },
-    { id: "barnard", label: "Barnard’s Star", ra: 269.446269, dec: 4.768204, band: 6 },
-    { id: "epsindiB", label: "Epsilon Indi B", ra: 331.096644, dec: -56.800660, band: 2 },
-    { id: "rwaur", label: "RW Aurigae", ra: 76.956587, dec: 30.401291, band: 1 },
-    { id: "rdra", label: "R Draconis", ra: 248.167233, dec: 66.755024, band: 5 },
+    { id: "wise0855", label: "WISE 0855", ra: 133.759765, dec: -7.242186, band: 6, raJ2000: 133.81890825, decJ2000: -7.24704800, pmra: -8123.7, pmdec: 673.2, epoch: 2026.0 },
+    { id: "barnard", label: "Barnard’s Star", ra: 269.446269, dec: 4.768204, band: 6, raJ2000: 269.45207696, decJ2000: 4.69336497, pmra: -801.551, pmdec: 10362.394, epoch: 2026.0 },
+    { id: "epsindiB", label: "Epsilon Indi B", ra: 331.096644, dec: -56.800660, band: 2, raJ2000: 331.04414659, decJ2000: -56.78284420, pmra: 3981.977, pmdec: -2466.832, epoch: 2026.0 },
+    { id: "rwaur", label: "RW Aurigae", ra: 76.956587, dec: 30.401291, band: 1, raJ2000: 76.95652603, decJ2000: 30.40143817, pmra: 7.23, pmdec: -20.33, epoch: 2026.0 },
+    { id: "rdra", label: "R Draconis", ra: 248.167233, dec: 66.755024, band: 5, raJ2000: 248.16761083, decJ2000: 66.75497942, pmra: -20.643, pmdec: 6.149, epoch: 2026.0 },
   ];
+
+  export function mjdToJulianYear(mjd: number): number {
+    return 2000 + (mjd - 51544.5) / 365.25;
+  }
+
+  export function propagateProperMotion(
+    ra: number,
+    dec: number,
+    pmra: number | null | undefined,
+    pmdec: number | null | undefined,
+    epoch: number | null | undefined,
+    year: number | null,
+  ): [number, number] {
+    if (year === null || epoch == null || pmra == null || pmdec == null) return [ra, dec];
+    const dt = year - epoch;
+    const cos = Math.cos(dec * Math.PI / 180);
+    if (Math.abs(cos) < 1e-8) return [ra, dec];
+    return [ra + dt * pmra / 3600000 / cos, dec + dt * pmdec / 3600000];
+  }
+
+  export function targetPosition(
+    target: Pick<Target, "ra" | "dec" | "raJ2000" | "decJ2000" | "pmra" | "pmdec" | "epoch">,
+    mjd: number,
+  ): [number, number] {
+    const year = mjdToJulianYear(mjd);
+    if (target.raJ2000 !== undefined && target.decJ2000 !== undefined) {
+      return propagateProperMotion(target.raJ2000, target.decJ2000, target.pmra, target.pmdec, 2000.0, year);
+    }
+    return propagateProperMotion(target.ra, target.dec, target.pmra, target.pmdec, target.epoch ?? 2026.0, year);
+  }
+
+  export function findTargetAt(ra: number, dec: number, radiusDeg = 0.002, mjd?: number): Target | undefined {
+    const cos = Math.cos(dec * Math.PI / 180);
+    return TARGETS.find((target) => {
+      const [tra, tdec] = mjd !== undefined ? targetPosition(target, mjd) : [target.ra, target.dec];
+      let dra = Math.abs(tra - ra);
+      if (dra > 180) dra = 360 - dra;
+      if (Math.hypot(dra * cos, tdec - dec) <= radiusDeg) return true;
+      if (target.raJ2000 !== undefined && target.decJ2000 !== undefined) {
+        let draJ = Math.abs(target.raJ2000 - ra);
+        if (draJ > 180) draJ = 360 - draJ;
+        if (Math.hypot(draJ * cos, target.decJ2000 - dec) <= radiusDeg) return true;
+      }
+      return false;
+    });
+  }
 }

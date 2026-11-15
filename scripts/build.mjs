@@ -27,6 +27,11 @@ function run(program, args) {
   execFileSync(program, args, { cwd: root, stdio: "inherit" });
 }
 
+function hasTool(cmd, args = ["--version"]) {
+  const result = spawnSync(cmd, args, { encoding: "utf8" });
+  return result.status === 0;
+}
+
 function hasRustTarget() {
   const target = spawnSync("rustc", ["--target", "wasm32-unknown-unknown", "--print", "target-libdir"], {
     encoding: "utf8",
@@ -35,6 +40,7 @@ function hasRustTarget() {
 }
 
 function compileRust() {
+  if (!hasTool("rustc")) return null;
   const source = join(root, "src/kernel.rs");
   const wasm = join(scratch, "skyshift.wasm");
   const optimizations = ["--edition", "2024", "-O", "-C", "panic=abort"];
@@ -48,6 +54,7 @@ function compileRust() {
     ]);
     return { wasm, toolchain: "rustc wasm32-unknown-unknown" };
   }
+  if (!hasTool("clang")) return null;
 
   // The kernel needs neither allocation nor target-specific APIs. Preserve
   // Rust's checked arithmetic/accesses and have LLVM emit a wasm32 object.
@@ -131,12 +138,17 @@ function compileTypeScript(files) {
 
 try {
   const kernel = compileRust();
-  const bytes = readFileSync(kernel.wasm);
+  const bytes = kernel ? readFileSync(kernel.wasm) : Buffer.alloc(0);
+  const toolchain = kernel ? kernel.toolchain : "TypeScript only (Rust/WASM compiler unavailable)";
+  if (!kernel) {
+    console.warn("[WARN] Rust/Clang toolchain not found; building TypeScript-only dist without kernel.wasm.");
+  }
   const data = fixture();
-  const sources = ["science", "wasm", "worker", "coordinates", "archive", "spectrum", "catalogue", "map", "track", "viewer"];
+  const sources = ["science", "wasm", "worker", "coordinates", "archive", "spectrum", "catalogue", "map", "track", "comparison", "viewer"];
   const assemble = compileTypeScript(sources.map((name) => `src/${name}.ts`));
   const compute = assemble(sources.slice(0, 2));
-  const worker = assemble(sources.slice(0, 3)) + "\nSkyShift.installWorker(self);";
+  const workerBundle = assemble(["science", "wasm", "coordinates", "archive", "worker"]);
+  const worker = workerBundle + "\nSkyShift.installWorker(self);";
   const viewer = assemble(sources);
   const exampleSource = join(root, "reference/fixtures/examples");
   // Examples bundled in this build; the viewer fetches only these and goes
@@ -146,7 +158,7 @@ try {
     fixture: data,
     wasm: bytes.toString("base64"),
     worker,
-    toolchain: kernel.toolchain,
+    toolchain,
     examples: bundledExamples,
   };
   const html = read("src/index.html")
@@ -155,10 +167,12 @@ try {
     .replace("/* BUILD_JS */", () => viewer.replaceAll("</script", "<\\/script"));
   mkdirSync(out, { recursive: true });
   writeFileSync(join(out, "index.html"), html);
-  writeFileSync(join(out, "kernel.wasm"), bytes);
+  const wasmPath = join(out, "kernel.wasm");
+  if (bytes.length) writeFileSync(wasmPath, bytes);
+  else rmSync(wasmPath, { force: true });
   writeFileSync(join(out, "core.cjs"), compute + "\nmodule.exports = SkyShift;\n");
-  writeFileSync(join(out, "worker.cjs"), assemble(sources.slice(0, 3)) + "\nmodule.exports = SkyShift;\n");
-  writeFileSync(join(out, "archive.cjs"), assemble(["science", "coordinates", "archive", "spectrum", "catalogue", "map", "track"]) + "\nmodule.exports = SkyShift;\n");
+  writeFileSync(join(out, "worker.cjs"), workerBundle + "\nmodule.exports = SkyShift;\n");
+  writeFileSync(join(out, "archive.cjs"), assemble(["science", "coordinates", "archive", "spectrum", "catalogue", "map", "track", "comparison"]) + "\nmodule.exports = SkyShift;\n");
   writeFileSync(join(out, "fixture.json"), JSON.stringify(data));
   const exampleOutput = join(out, "examples");
   rmSync(exampleOutput, { recursive: true, force: true });
@@ -168,12 +182,15 @@ try {
   }
   writeFileSync(join(out, "wise0855_d6.manifest.json"), read("reference/fixtures/wise0855_d6.manifest.json"));
   writeFileSync(join(out, "build.json"), JSON.stringify({
-    toolchain: kernel.toolchain,
+    toolchain,
     wasmBytes: bytes.length,
     fixtureBytes: Buffer.byteLength(JSON.stringify(data)),
     htmlBytes: Buffer.byteLength(html),
   }, null, 2));
-  console.log(`Built dist/index.html (${Buffer.byteLength(html).toLocaleString()} bytes). Rust/WASM: ${bytes.length.toLocaleString()} bytes, ${kernel.toolchain}.`);
+  const summary = bytes.length
+    ? `Rust/WASM: ${bytes.length.toLocaleString()} bytes, ${toolchain}.`
+    : toolchain + ".";
+  console.log(`Built dist/index.html (${Buffer.byteLength(html).toLocaleString()} bytes). ${summary}`);
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
