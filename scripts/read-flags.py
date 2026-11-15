@@ -6,6 +6,7 @@ import math
 import re
 import struct
 import sys
+import urllib.error
 import urllib.request
 import zlib
 
@@ -347,6 +348,10 @@ if __name__ == '__main__':
         if len(sys.argv) != 4:
             raise ValueError('Expected product key and detector coordinates')
         print(json.dumps(read_flags(sys.argv[1], int(sys.argv[2]), int(sys.argv[3]))))
+    except (urllib.error.URLError, OSError) as exc:
+        # Network, TLS and timeout failures: the server logs the detail; users get a plain message.
+        print(json.dumps({'error': 'archive-unreachable', 'detail': str(exc)}))
+        sys.exit(1)
     except Exception as exc:
         print(json.dumps({'error': str(exc)}))
         sys.exit(1)

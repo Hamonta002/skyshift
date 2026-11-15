@@ -51,8 +51,8 @@ export async function searchCatalogue(params, fetcher = fetch) {
   url.search = new URLSearchParams({REQUEST:'doQuery', LANG:'ADQL', FORMAT:'csv', MAXREC:'250', QUERY:query});
   let response;
   try { response = await fetcher(url, { signal: AbortSignal.timeout(20000) }); }
-  catch { const error = new Error(`${provider.label} catalogue is unavailable.`); error.status = 502; throw error; }
-  if (!response.ok) { const error = new Error(`${provider.label} catalogue returned HTTP ${response.status}.`); error.status = 502; throw error; }
+  catch { const error = new Error(`${provider.label} is not answering right now.`); error.status = 502; throw error; }
+  if (!response.ok) { const error = new Error(`${provider.label} is not answering right now (HTTP ${response.status}).`); error.status = 502; throw error; }
   const body = await response.text();
   if (body.length > 1_000_000) throw new Error('Catalogue response is too large.');
   const rows = parseCsv(body);

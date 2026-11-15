@@ -120,6 +120,7 @@ declare const ASSETS: {
   }
 
   const params = new URLSearchParams(location.search);
+  const phoneLayout = matchMedia("(max-width: 899px)");
   // Engine, cache and benchmark controls are for development; ?debug=1 shows them.
   const debug = params.get("debug") === "1";
   if (!debug) document.querySelector<HTMLElement>(".diagnostics")!.hidden = true;
@@ -162,6 +163,7 @@ declare const ASSETS: {
     for (const button of [next, previous, play]) button.disabled = unavailable || (series?.frames.length ?? 0) < 2;
     for (const button of visits) button.disabled = unavailable;
     for (const select of [referenceSelect, comparisonSelect]) select.disabled = unavailable || (series?.frames.length ?? 0) < 2;
+    get<HTMLButtonElement>("swap-pair").disabled = referenceSelect.disabled;
     layerBandSelect.disabled = busy;
     modeSelect.disabled = unavailable;
     blink.disabled = unavailable || !canCompare() || modeSelect.value === "exposures";
@@ -202,6 +204,9 @@ declare const ASSETS: {
       url.searchParams.delete("from"); url.searchParams.delete("to"); url.searchParams.delete("name");
       for (const [key, value] of Object.entries(currentSelection)) url.searchParams.set(key, String(value));
     } else for (const key of ["ra", "dec", "band", "fov", "from", "to", "asof", "name"]) url.searchParams.delete(key);
+    // A saved example reopens from its bundle; a link without this would need a live archive search.
+    const example = currentSelection && !currentSelection.asof && currentTargetId && ASSETS.examples.includes(currentTargetId) ? currentTargetId : null;
+    if (example) url.searchParams.set("example", example); else url.searchParams.delete("example");
     // Keep the map position readable, Google-Maps style: at=ra,dec,zoom.
     if (tracked) url.searchParams.set("mark", `${tracked.start.ra.toFixed(6)},${tracked.start.dec.toFixed(6)}`);
     else url.searchParams.delete("mark");
@@ -438,7 +443,8 @@ declare const ASSETS: {
         ctx.stroke();
 
         // Top tag badge: "Focus area · 5′ field"
-        const tagText = `Focus area · ${targetFovArcmin}′ field`;
+        // The square is what "Search this area" would request, not the loaded image.
+        const tagText = `Next search · ${targetFovArcmin}′`;
         ctx.font = "600 10px system-ui, sans-serif";
         const tagW = ctx.measureText(tagText).width;
         ctx.fillStyle = "rgba(12, 19, 34, 0.92)";
@@ -515,17 +521,18 @@ declare const ASSETS: {
     const distArcsec = SkyShift.separation(centerRa, centerDec, fixture.ra0, fixture.dec0);
     const halfSideArcsec = (fieldSide() * fixture.scale) / 2;
     const isInside = distArcsec <= halfSideArcsec * 1.05;
-    const targetFovArcmin = Number(fovSelect.value) || 5;
+    const coverageArcmin = fieldSide() * fixture.scale / 60;
+    const coverage = `${coverageArcmin >= 10 ? coverageArcmin.toFixed(0) : coverageArcmin.toFixed(1)}′ image`;
 
     locatorZone.className = `locator-zone ${isInside ? "inside" : "outside"}`;
     locatorZone.textContent = isInside ? "Inside field" : "Off field";
 
     if (distArcsec < 3) {
-      locatorOffset.textContent = `Centered on ${fieldName()} (${targetFovArcmin}′ focus)`;
+      locatorOffset.textContent = `Centered on ${fieldName()} · ${coverage}`;
       locatorReturn.hidden = true;
     } else {
       const dir = headingDirection(centerRa, centerDec, fixture.ra0, fixture.dec0);
-      locatorOffset.textContent = `Focusing ${targetFovArcmin}′ field · ${formatAngle(distArcsec)} ${dir} of ${fieldName()}`;
+      locatorOffset.textContent = `${formatAngle(distArcsec)} ${dir} of ${fieldName()} · ${coverage}`;
       locatorReturn.hidden = isInside && cameraIsDefault;
     }
     locatorCoords.textContent = `${SkyShift.formatRa(centerRa, 0.01)} ${SkyShift.formatDec(centerDec, 0.1)}`;
@@ -1107,6 +1114,7 @@ declare const ASSETS: {
   const quickSpectrumCard = get("quick-spectrum-card");
   const quickSpectrumPlot = document.querySelector<SVGSVGElement>("#quick-spectrum-plot")!;
   const quickSpectrumMetric = get<HTMLSelectElement>("quick-spectrum-metric");
+  const quickSpectrumRange = get<HTMLSelectElement>("quick-spectrum-range");
   const quickSpectrumClose = get("quick-spectrum-close");
   const quickSpectrumStatus = get("quick-spectrum-status");
   const quickSpectrumLegend = get("quick-spectrum-legend");
@@ -1131,7 +1139,15 @@ declare const ASSETS: {
     quickSpectrumPlot.replaceChildren();
     quickSpectrumPlot.setAttribute("aria-label", `${metricName} by wavelength`);
     quickSpectrumHover.textContent = hoverHint;
-    const xAt = (wavelength: number) => left + (wavelength - 0.75) / (5.01 - 0.75) * width;
+    // Default to the span of the measurements so one band fills the plot; "All bands" shows 0.75–5.01 μm.
+    const allBands = quickSpectrumRange.value === "all";
+    let xLo = 0.75, xHi = 5.01;
+    if (!allBands) {
+      const waves = points.map((point) => point.wavelength);
+      const lo = Math.min(...waves), hi = Math.max(...waves), pad = Math.max((hi - lo) * 0.08, 0.02);
+      xLo = Math.max(0.7, lo - pad); xHi = Math.min(5.1, hi + pad);
+    }
+    const xAt = (wavelength: number) => left + (wavelength - xLo) / (xHi - xLo) * width;
     const values = points.map((point) => point[metric]);
     let min = Math.min(0, ...values), max = Math.max(0, ...values);
     if (max - min < 1e-12) { min -= 1e-6; max += 1e-6; }
@@ -1144,10 +1160,13 @@ declare const ASSETS: {
     ];
     const measurementColor = bandRanges[band - 1][2];
     quickSpectrumPlot.append(svgElement("rect", { x: "0", y: "0", width: "620", height: "300", rx: "10", fill: "#0b111c" }));
-    bandRanges.forEach(([lo, hi, color]) => quickSpectrumPlot.append(svgElement("rect", {
-      x: String(xAt(lo)), y: String(top), width: String(Math.max(1, xAt(hi) - xAt(lo))), height: String(height),
-      fill: color, "fill-opacity": "0.055",
-    })));
+    bandRanges.forEach(([lo, hi, color]) => {
+      const a = Math.max(lo, xLo), b = Math.min(hi, xHi);
+      if (b > a) quickSpectrumPlot.append(svgElement("rect", {
+        x: String(xAt(a)), y: String(top), width: String(Math.max(1, xAt(b) - xAt(a))), height: String(height),
+        fill: color, "fill-opacity": "0.055",
+      }));
+    });
     for (let i = 0; i <= 4; i++) {
       const y = top + height * i / 4;
       quickSpectrumPlot.append(svgElement("line", { x1: String(left), y1: String(y), x2: String(left + width), y2: String(y), stroke: "#273548", "stroke-width": "1" }));
@@ -1157,19 +1176,22 @@ declare const ASSETS: {
     }
     quickSpectrumPlot.append(svgElement("line", { x1: String(left), y1: String(top), x2: String(left), y2: String(bottom), stroke: "#9baabe" }));
     quickSpectrumPlot.append(svgElement("line", { x1: String(left), y1: String(bottom), x2: String(left + width), y2: String(bottom), stroke: "#9baabe" }));
-    for (const wavelength of [0.75, 1.5, 2.5, 3.5, 4.5, 5.01]) {
+    const digits = xHi - xLo < 0.3 ? 3 : 2;
+    const xTicks = allBands ? [0.75, 1.5, 2.5, 3.5, 4.5, 5.01] : [0, 1, 2, 3, 4].map((i) => xLo + (xHi - xLo) * i / 4);
+    for (const wavelength of xTicks) {
       const x = xAt(wavelength);
       quickSpectrumPlot.append(svgElement("line", { x1: String(x), y1: String(bottom), x2: String(x), y2: String(bottom + 4), stroke: "#9baabe" }));
       const tick = svgElement("text", { x: String(x), y: String(bottom + 18), fill: "#9baabe", "font-size": "11", "text-anchor": "middle" });
-      tick.textContent = wavelength.toFixed(wavelength === 0.75 || wavelength === 5.01 ? 2 : 1);
+      tick.textContent = allBands ? wavelength.toFixed(wavelength === 0.75 || wavelength === 5.01 ? 2 : 1) : wavelength.toFixed(digits);
       quickSpectrumPlot.append(tick);
     }
     const xLabel = svgElement("text", { x: String(left + width / 2), y: "288", fill: "#dbe9fa", "font-size": "12", "text-anchor": "middle" });
-    xLabel.textContent = "Wavelength (μm) · 0.75–5.01";
+    xLabel.textContent = `Wavelength (μm) · ${xLo.toFixed(digits)}–${xHi.toFixed(digits)}`;
     const yLabel = svgElement("text", { x: "15", y: String(top + height / 2), fill: "#dbe9fa", "font-size": "12", "text-anchor": "middle", transform: `rotate(-90 15 ${top + height / 2})` });
     yLabel.textContent = `${metricName} (${unit})`;
     quickSpectrumPlot.append(xLabel, yLabel);
-    quickSpectrumLegend.replaceChildren(...bandRanges.map(([lo, hi, color], index) => {
+    // The legend lists only the bands inside the plotted range.
+    quickSpectrumLegend.replaceChildren(...bandRanges.flatMap(([lo, hi, color], index) => hi <= xLo || lo >= xHi ? [] : [[lo, hi, color, index] as const]).map(([lo, hi, color, index]) => {
       const item = document.createElement("span");
       const swatch = document.createElement("i"); swatch.style.backgroundColor = color;
       item.append(swatch, document.createTextNode(`B${index + 1} ${lo.toFixed(2)}–${hi.toFixed(2)}`));
@@ -1203,7 +1225,7 @@ declare const ASSETS: {
     quickSpectrumCard.hidden = false;
     quickSpectrumPlot.replaceChildren();
     quickSpectrumLegend.replaceChildren();
-    quickSpectrumMetric.disabled = true;
+    quickSpectrumMetric.disabled = quickSpectrumRange.disabled = true;
     get("quick-spectrum-title").textContent = `${label} · spectrum`;
     quickSpectrumStatus.textContent = typeof target === "function" ? "Sampling exposures along the measured track…"
       : `Sampling available exposures at ${target.ra.toFixed(5)}°, ${target.dec.toFixed(5)}°…`;
@@ -1214,7 +1236,7 @@ declare const ASSETS: {
       if (controller.signal.aborted || fixture !== requestedFixture) return;
       if (!points.length) throw new Error(`No usable wavelength samples in Band ${band}.`);
       spectrumData = { points, band };
-      quickSpectrumMetric.disabled = false;
+      quickSpectrumMetric.disabled = quickSpectrumRange.disabled = false;
       plotSpectrum();
     } catch (error) {
       if (controller.signal.aborted || fixture !== requestedFixture) return;
@@ -1242,6 +1264,7 @@ declare const ASSETS: {
   }
   get("here-close").addEventListener("click", () => { hideHere(); mapCanvas.focus(); });
   quickSpectrumMetric.addEventListener("change", plotSpectrum);
+  quickSpectrumRange.addEventListener("change", plotSpectrum);
   get("here-spectrum-open").addEventListener("click", (event) => {
     if (!selected) return;
     const target = selectedToSpectrumTarget(selected);
@@ -1303,9 +1326,30 @@ declare const ASSETS: {
 
   const catalogueNames = ["gaia", "wise"] as const;
   const catalogueRequests: Partial<Record<(typeof catalogueNames)[number], AbortController>> = {};
+  const catalogueLabels = { gaia: "Gaia DR3", wise: "CatWISE2020" } as const;
+  // Each catalogue reports separately, so one failing never hides the other's result.
+  const catalogueMessages: Partial<Record<(typeof catalogueNames)[number], { text: string; failed: boolean }>> = {};
+  function renderCatalogueStatus(): void {
+    get("catalogue-status").replaceChildren(...catalogueNames.flatMap((name) => {
+      const message = catalogueMessages[name];
+      if (!message) return [];
+      const line = document.createElement("span");
+      line.className = "catalogue-line";
+      line.textContent = message.text;
+      if (message.failed) {
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "link-button";
+        retry.textContent = `Try ${catalogueLabels[name]} again`;
+        retry.addEventListener("click", () => { get<HTMLInputElement>(name).checked = true; void toggleCatalogue(name); });
+        line.append(" ", retry);
+      }
+      return [line];
+    }));
+  }
 
   async function toggleCatalogue(name: "gaia" | "wise"): Promise<void> {
-    const checkbox = get<HTMLInputElement>(name), output = get("catalogue-status");
+    const checkbox = get<HTMLInputElement>(name);
     const count = get(name === "gaia" ? "gaia-count" : "wise-count");
     const pending = catalogueRequests[name];
     if (!checkbox.checked) {
@@ -1314,6 +1358,8 @@ declare const ASSETS: {
         delete catalogueRequests[name];
         count.textContent = "not loaded";
       }
+      delete catalogueMessages[name];
+      renderCatalogueStatus();
       render();
       return;
     }
@@ -1324,6 +1370,8 @@ declare const ASSETS: {
     const visibleFov = screen.height / Math.max(scaleNow(), 1e-9) / 60;
     const queryFov = Math.min(20, Math.max(currentSelection?.fov ?? fixture.half * 2 * fixture.scale / 60, visibleFov * 1.4));
     count.textContent = "loading…";
+    catalogueMessages[name] = { text: `${catalogueLabels[name]}: loading…`, failed: false };
+    renderCatalogueStatus();
     try {
       const q = new URLSearchParams({ catalogue: name, ra: String(fixture.ra0), dec: String(fixture.dec0), fov: String(queryFov) });
       const response = await fetch(`/api/catalogue?${q}`, { signal: controller.signal });
@@ -1334,7 +1382,8 @@ declare const ASSETS: {
       catalogues[name] = sources;
       count.textContent = `${sources.length} sources`;
       count.title = result.truncated ? "250-source display limit reached" : `${sources.length} catalogue sources in ${queryFov.toFixed(1)}′ field`;
-      output.textContent = `${result.catalogue}: ${sources.length} sources${result.truncated ? " (brightest 250)" : ""}. Click a marker for details.`;
+      catalogueMessages[name] = { text: `${result.catalogue}: ${sources.length} sources${result.truncated ? " (brightest 250)" : ""}. Click a marker for details.`, failed: false };
+      renderCatalogueStatus();
       const list = document.createElement("details");
       const summary = document.createElement("summary"); summary.textContent = `${result.catalogue} sources`;
       const text = document.createElement("p");
@@ -1362,7 +1411,10 @@ declare const ASSETS: {
       if (controller.signal.aborted) return;
       checkbox.checked = false;
       count.textContent = "unavailable";
-      output.textContent = error instanceof TypeError ? "Catalogue overlays need the SkyShift server (npm run dev)." : error instanceof Error ? error.message : String(error);
+      catalogueMessages[name] = error instanceof TypeError
+        ? { text: "Catalogue overlays need the SkyShift server (npm run dev).", failed: false }
+        : { text: error instanceof Error ? error.message : String(error), failed: true };
+      renderCatalogueStatus();
     } finally {
       if (catalogueRequests[name] === controller) delete catalogueRequests[name];
     }
@@ -1386,7 +1438,8 @@ declare const ASSETS: {
       count.removeAttribute("title");
     }
     get("catalogue-list").replaceChildren();
-    get("catalogue-status").textContent = "";
+    for (const name of catalogueNames) delete catalogueMessages[name];
+    renderCatalogueStatus();
     refreshComparisonPicker();
   }
 
@@ -1990,6 +2043,7 @@ declare const ASSETS: {
         if (point.saturated) ctx.stroke(); else ctx.fill();
       }
       chart.hidden = false;
+      chart.scrollIntoView({ block: "nearest", behavior: reducedMotion.matches ? "auto" : "smooth" });
       const comparison = SkyShift.compareSpectrumVisits(points, fixture.dates);
       if (comparison.summary) {
         comparisonEl.textContent = comparison.summary;
@@ -2157,16 +2211,18 @@ declare const ASSETS: {
     render();
     if (comparisonTarget && comparisonReference) void runComparison();
   });
-  get("comp-load-gaia").addEventListener("click", () => {
-    const box = get<HTMLInputElement>("gaia");
-    if (!box.checked) {
-      box.checked = true;
-      void toggleCatalogue("gaia");
-    } else if (!catalogues.gaia) {
-      void toggleCatalogue("gaia");
-    } else {
-      get("comp-status").textContent = `${catalogues.gaia.length} Gaia DR3 sources ready in the dropdown or on the map.`;
+  get("comp-load-gaia").addEventListener("click", async () => {
+    const output = get("comp-status");
+    if (catalogueRequests.gaia) { output.textContent = "Gaia DR3 is still loading…"; return; }
+    if (!catalogues.gaia) {
+      get<HTMLInputElement>("gaia").checked = true;
+      output.textContent = "Loading Gaia DR3 sources…";
+      await toggleCatalogue("gaia");
     }
+    // Without Gaia, a reference can still be chosen by hand on the map.
+    output.textContent = catalogues.gaia
+      ? `${catalogues.gaia.length} Gaia DR3 sources ready in the dropdown or on the map.`
+      : `${catalogueMessages.gaia?.text ?? "Gaia DR3 did not load."} You can still click a star on the map and choose Set reference.`;
   });
 
   function drawComparisonChart(): void {
@@ -2507,6 +2563,8 @@ declare const ASSETS: {
       const other = select === referenceSelect ? comparisonSelect : referenceSelect;
       const previous = select.dataset.previous;
       other.value = previous && previous !== select.value ? previous : String((Number(select.value) + 1) % visits.length);
+      // Never change the other choice silently: it reverses what "What changed" shows.
+      status.textContent = `A and B must be different visits, so ${other === referenceSelect ? "A" : "B"} changed too: A is now ${labelFor(Number(referenceSelect.value))}, B is ${labelFor(Number(comparisonSelect.value))}.`;
     }
     referenceSelect.dataset.previous = referenceSelect.value;
     comparisonSelect.dataset.previous = comparisonSelect.value;
@@ -2514,6 +2572,18 @@ declare const ASSETS: {
     if (modeSelect.value === "blink") frame = Number(referenceSelect.value);
     updateVisitBadges();
     commitView();
+  });
+  get("swap-pair").addEventListener("click", () => {
+    if (referenceSelect.disabled) return;
+    pause();
+    [referenceSelect.value, comparisonSelect.value] = [comparisonSelect.value, referenceSelect.value];
+    referenceSelect.dataset.previous = referenceSelect.value;
+    comparisonSelect.dataset.previous = comparisonSelect.value;
+    if (spectrumOpener?.id === "candidate-spectrum") closeQuickSpectrum();
+    if (modeSelect.value === "blink") frame = Number(referenceSelect.value);
+    updateVisitBadges();
+    commitView();
+    status.textContent = `Swapped: A is now ${labelFor(Number(referenceSelect.value))}, B is ${labelFor(Number(comparisonSelect.value))}.`;
   });
   for (const input of stretchInputs) input.addEventListener("change", () => {
     pause();
@@ -2915,6 +2985,20 @@ declare const ASSETS: {
   }
 
   let moverFilter: "all" | "mover" | "variable" = "all";
+  let moverFilterFor: SkyShift.MoverCandidate[] | null = null;
+  const moversShowAll = get<HTMLButtonElement>("movers-show-all");
+  function setMoverFilter(filter: "all" | "mover" | "variable"): void {
+    moverFilter = filter;
+    for (const button of moversFilters.querySelectorAll<HTMLButtonElement>("button")) {
+      const on = button.dataset.filter === filter;
+      button.classList.toggle("active", on);
+      button.setAttribute("aria-pressed", String(on));
+    }
+  }
+  function setMoversCollapsed(collapsed: boolean): void {
+    moversPanel.classList.toggle("collapsed", collapsed);
+    moversToggle.setAttribute("aria-expanded", String(!collapsed));
+  }
   const candidateNames = new WeakMap<SkyShift.MoverCandidate, string>();
   const candidateLookups = new WeakSet<SkyShift.MoverCandidate>();
 
@@ -2981,6 +3065,8 @@ declare const ASSETS: {
     const found = embed ? null : searchMovers();
     moversPanel.hidden = !found;
     if (!found) return;
+    // A filter chosen for one field must not hide the next field's results.
+    if (found !== moverFilterFor) { moverFilterFor = found; if (moverFilter !== "all") setMoverFilter("all"); }
 
     moversSubtitle.textContent = `Across ${series!.frames.length} visits`;
     const moved = found.filter((c) => c.kind === "mover").length;
@@ -3002,6 +3088,8 @@ declare const ASSETS: {
       action.addEventListener("click", () => {
         candidates = found;
         candidateIndex = index;
+        // On phones the list folds away so the chosen candidate's card has the room.
+        if (phoneLayout.matches) setMoversCollapsed(true);
         showCandidate();
         trackCandidate(candidate);
       });
@@ -3029,7 +3117,11 @@ declare const ASSETS: {
     }
 
     moversEmpty.hidden = items.length > 0;
-    moversEmpty.textContent = found.length ? "No candidates match this filter." : "No clear movement or brightness changes across the visits.";
+    moversEmpty.textContent = found.length
+      ? `No ${moverFilter === "mover" ? "moving" : "brightness"} candidates in this field.`
+      : "No candidates detected across these visits. Slow or faint changes can still be missed, so compare A and B by eye.";
+    moversShowAll.hidden = items.length > 0 || !found.length;
+    moversShowAll.textContent = `Show all ${found.length} candidate${found.length === 1 ? "" : "s"}`;
     moversList.replaceChildren(...items);
   }
 
@@ -3059,15 +3151,14 @@ declare const ASSETS: {
     const across = `across the ${series.frames.length} visits`;
     if (!candidates.length) {
       candidateCard.hidden = true;
-      status.textContent = `Nothing clearly moved or changed ${across}.`;
+      status.textContent = `No candidates detected ${across}.`;
       updateMoversPanel();
       render();
       return;
     }
     hideHere();
     candidateIndex = 0;
-    moversPanel.classList.remove("collapsed");
-    moversToggle.setAttribute("aria-expanded", "true");
+    if (!phoneLayout.matches) setMoversCollapsed(false);
     showCandidate();
     status.textContent = `Found ${findingsText(candidates)} ${across}. A and B show the two visits that compare it best.`;
   }
@@ -3093,10 +3184,10 @@ declare const ASSETS: {
     updateMoversPanel();
     const movers = found?.filter((c) => c.kind === "mover").length ?? 0, changes = (found?.length ?? 0) - movers;
     findMoversLabel.textContent = movers ? `${movers} possible mover${movers === 1 ? "" : "s"}`
-      : changes ? `${changes} brightness change${changes === 1 ? "" : "s"}` : found ? "Nothing moved" : "Find movers";
+      : changes ? `${changes} brightness change${changes === 1 ? "" : "s"}` : found ? "No candidates" : "Find movers";
     findMoversButton.classList.toggle("found", !!found?.length);
     findMoversButton.title = found?.length ? `Show the ${findingsText(found)} found across the visits (F)`
-      : "Look for sources that moved or changed across the visits (F)";
+      : found ? "No candidates detected across the visits (F)" : "Look for sources that moved or changed across the visits (F)";
   }
   /** Puts the two visits that show a candidate best into A and B. */
   function showPair([a, b]: [number, number]): void {
@@ -3148,18 +3239,17 @@ declare const ASSETS: {
   });
 
   locatorReturn.addEventListener("click", () => { frameField(); mapCanvas.focus(); });
-  moversToggle.addEventListener("click", () => {
-    const isCollapsed = moversPanel.classList.toggle("collapsed");
-    moversToggle.setAttribute("aria-expanded", String(!isCollapsed));
-  });
+  moversToggle.addEventListener("click", () => setMoversCollapsed(!moversPanel.classList.contains("collapsed")));
+  // Phones start with the list folded to its header so it does not cover the field.
+  if (phoneLayout.matches) setMoversCollapsed(true);
   for (const btn of moversFilters.querySelectorAll<HTMLButtonElement>("button")) {
     btn.addEventListener("click", () => {
-      moversFilters.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
-      moverFilter = (btn.dataset.filter as "all" | "mover" | "variable") || "all";
+      setMoverFilter((btn.dataset.filter as "all" | "mover" | "variable") || "all");
       updateMoversPanel();
     });
   }
+  setMoverFilter(moverFilter);
+  moversShowAll.addEventListener("click", () => { setMoverFilter("all"); updateMoversPanel(); });
 
   get("here-track").addEventListener("click", () => { if (selected) trackAt(selected.ra, selected.dec); });
   get("object-clear").addEventListener("click", () => {
@@ -3300,8 +3390,11 @@ declare const ASSETS: {
       commitView();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      output.textContent = status.textContent = controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError") ? "Colour composite cancelled."
-        : error instanceof TypeError || message === "server" ? "Colour needs the SkyShift server to fetch the other bands." : message;
+      const cancelled = controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError");
+      const offline = error instanceof TypeError || message === "server";
+      output.textContent = status.textContent = cancelled ? "Colour composite cancelled."
+        : offline ? "Colour needs the SkyShift server to fetch the other bands." : message;
+      if (!cancelled && !offline) showNotice(`Could not build the colour image: ${message} Still showing band ${loadedBand}.`, () => void loadColour());
     } finally {
       busy = false; interrupt = undefined; updateControls(); updateColourToggle();
     }
@@ -3342,6 +3435,13 @@ declare const ASSETS: {
     if (restoreFocus) (panelOpener && document.contains(panelOpener) && !panelOpener.closest("[hidden]") ? panelOpener : mapCanvas).focus();
   }
   menuButton.addEventListener("click", () => panel.hidden ? openPanel(menuButton) : closePanel());
+  function placeFieldNotes(): void {
+    const notes = [get("field-about"), get("field-fresh")];
+    if (phoneLayout.matches) panel.querySelector(".panel-body")!.prepend(...notes);
+    else panel.querySelector(".panel-title")!.append(...notes);
+  }
+  phoneLayout.addEventListener("change", placeFieldNotes);
+  placeFieldNotes();
   get("panel-close").addEventListener("click", () => closePanel());
 
   // ----------------------------------------------------------- popovers ----
@@ -3723,7 +3823,16 @@ declare const ASSETS: {
     get("visit-total").textContent = modeSelect.value === "exposures" ? imagesText(labels.length) : `${labels.length} ${labels.length === 1 ? "visit" : "visits"}`;
     updateVisitBadges();
     refreshThumbnails();
+    updateVisitsOverflow();
   }
+  const visitsStrip = get("visits");
+  function updateVisitsOverflow(): void {
+    const { scrollLeft, scrollWidth, clientWidth } = visitsStrip;
+    visitsStrip.classList.toggle("more-left", scrollLeft > 2);
+    visitsStrip.classList.toggle("more-right", scrollLeft + clientWidth < scrollWidth - 2);
+  }
+  visitsStrip.addEventListener("scroll", updateVisitsOverflow, { passive: true });
+  new ResizeObserver(updateVisitsOverflow).observe(visitsStrip);
   // Roving focus: arrow keys step through the thumbnails.
   get("visits").addEventListener("keydown", (event) => {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
@@ -3738,9 +3847,10 @@ declare const ASSETS: {
   engineSelect.addEventListener("change", () => void load());
   cacheSelect.addEventListener("change", () => void load());
 
-  async function openExample(id: string): Promise<void> {
+  /** Opens a saved example; `restore` keeps the shared frame and wavelength range. True once it is shown. */
+  async function openExample(id: string, restore?: { waveRange: [number, number] | null }): Promise<boolean> {
     const target = SkyShift.TARGETS.find((item) => item.id === id);
-    if (!target || busy) return;
+    if (!target || busy) return false;
     closeQuickSpectrum();
     closeDrop();
     if (target.id === "wise0855") {
@@ -3755,13 +3865,17 @@ declare const ASSETS: {
         setFieldInfo(target.label, "RA 133.759765° · Dec −7.242186° · 4.42–5.00 μm · 2.1′ field", target.band, target.id);
         loadedOptions = { band: target.band, fov: 5, from: "", to: "" };
         hideHere();
+        hideNotice();
+        ready = true;
         frameField();
         commitView();
         status.textContent = "Ready · saved example";
         maybeShowHint();
         void checkNewer(target);
-      } else frame = previousFrame;
-      return;
+        return true;
+      }
+      frame = previousFrame;
+      return false;
     }
     let bundle: { fixture: SkyShift.PackedFixture } | undefined;
     if (ASSETS.examples.includes(target.id)) try {
@@ -3769,18 +3883,30 @@ declare const ASSETS: {
       if (response.ok) bundle = await response.json();
       else if (response.status !== 404) throw new Error("Could not load the example bundle.");
     } catch (error) {
-      if (!(error instanceof TypeError)) { status.textContent = error instanceof Error ? error.message : String(error); return; }
+      if (!(error instanceof TypeError)) { status.textContent = error instanceof Error ? error.message : String(error); return false; }
     }
     if (!bundle) {
       // Not bundled in this build: fetch the example from the archive instead.
       fovSelect.value = "5";
-      await searchFromOptions(target.ra, target.dec, undefined, target, { band: target.band });
-      return;
+      await searchFromOptions(target.ra, target.dec, undefined, target, { band: target.band, waveRange: restore?.waveRange, preserveFrame: !!restore });
+      return currentTargetId === target.id;
     }
-    const previousFrame = frame; frame = 0;
-    if (!await load(bundle.fixture)) { frame = previousFrame; return; }
-    frame = Number(referenceSelect.value) || 0;
-    fullBandFixture = bundle.fixture; wavelengthSelection = null; isBundled = false;
+    const previousFrame = frame;
+    if (!restore) frame = 0;
+    let data = bundle.fixture, selection: { min: number; max: number } | null = null;
+    if (restore?.waveRange) {
+      const [min, max] = restore.waveRange;
+      try {
+        const filtered = await SkyShift.filterWavelength(bundle.fixture, min, max, new AbortController().signal);
+        data = filtered.fixture; selection = { min, max };
+        get("wave-status").textContent = `${filtered.fixture.headers.length} exposures overlap ${min}–${max} μm; ${filtered.unavailable} had unavailable wavelength metadata. Dates without matching exposures are omitted.`;
+      } catch (error) {
+        get("wave-status").textContent = error instanceof Error ? error.message : String(error);
+      }
+    }
+    if (!await load(data)) { frame = previousFrame; return false; }
+    if (!restore) frame = Number(referenceSelect.value) || 0;
+    fullBandFixture = bundle.fixture; wavelengthSelection = selection; isBundled = false;
     setEarlierWindow(null);
     fovSelect.value = "5";
     currentSelection = { ra: target.ra, dec: target.dec, band: target.band, fov: 5 };
@@ -3789,11 +3915,14 @@ declare const ASSETS: {
     marker.checked = false;
     clearCatalogues();
     hideHere();
+    hideNotice();
+    ready = true;
     frameField();
     commitView();
     status.textContent = "Ready · saved example";
     maybeShowHint();
     void checkNewer(target);
+    return true;
   }
 
   /** Why a search came back empty: an archive outage is not the same as no images. */
@@ -3857,6 +3986,8 @@ declare const ASSETS: {
     void search(rest, undefined, target);
   });
 
+  /** Why the last archive search failed, for messages that outlive the status toast. */
+  let lastSearchError = "";
   async function search(
     request: { ra: number; dec: number; band: number; fov: number; from: string; to: string; endMjd?: number; waveRange?: [number, number] | null; preserveFrame?: boolean },
     savedAsof?: string,
@@ -3931,6 +4062,8 @@ declare const ASSETS: {
       lastReleases = [...new Set((data.collections as { name: string; status: string }[]).filter((item) => item.status !== "unavailable")
         .map((item) => item.name.replace(/^spherex_/, "").replace(/_deep$/, "").toUpperCase()))].sort();
       pending = null; succeeded = true;
+      ready = true;
+      hideNotice();
       loadedOptions = { band, fov, from, to };
       marker.checked = false;
       const target: Named | undefined = named ?? SkyShift.TARGETS.find((item) => item.ra === ra && item.dec === dec);
@@ -3951,10 +4084,16 @@ declare const ASSETS: {
     } catch (error) {
       searchController?.abort();
       const message = error instanceof Error ? error.message : String(error);
-      status.textContent = error instanceof DOMException && error.name === "AbortError" ? "Search cancelled. Showing the previous field."
-        : error instanceof TypeError || error instanceof SyntaxError
-          ? `Searching the archive needs the SkyShift server. Still showing ${fieldName()}.`
-          : `${message} Still showing ${fieldName()}.`;
+      const cancelled = error instanceof DOMException && error.name === "AbortError";
+      lastSearchError = error instanceof TypeError || error instanceof SyntaxError ? "Searching the archive needs the SkyShift server." : message;
+      status.textContent = cancelled ? "Search cancelled. Showing the previous field." : `${lastSearchError} Still showing ${fieldName()}.`;
+      if (!cancelled) {
+        // Keep the request and the shown field distinct, and make retrying one click.
+        const sameField = SkyShift.separation(ra, dec, fixture.ra0, fixture.dec0) < 1;
+        const requested = sameField && band !== loadedBand() ? `band ${band} of ${fieldName()}`
+          : named?.label ?? `the field at ${ra.toFixed(4)}°, ${dec.toFixed(4)}°`;
+        showNotice(`Could not load ${requested}: ${lastSearchError} Still showing ${fieldName()}.`, () => void search(request, savedAsof, named));
+      }
     } finally {
       searchController = undefined;
       interrupt = undefined;
@@ -3963,6 +4102,8 @@ declare const ASSETS: {
         // Go back to the field that is still loaded.
         pending = null;
         markChips(currentTargetId);
+        query.value = shownName;
+        get("query-clear").hidden = !shownName;
         camera = before.camera; cameraIsDefault = before.cameraIsDefault;
         if (cameraIsDefault) frameField(); else cameraChanged();
       }
@@ -3983,6 +4124,22 @@ declare const ASSETS: {
     if (!busy) toastTimer = window.setTimeout(() => toast.classList.remove("show"), status.textContent === routineStatus ? 2500 : 6000);
   }
   new MutationObserver(showToast).observe(status, { childList: true, characterData: true, subtree: true });
+  // A failure the user can act on stays visible, says what was asked for and what is still
+  // shown, and offers a retry, unlike the status toast which fades.
+  const notice = get("notice"), noticeText = get("notice-text"), noticeRetry = get<HTMLButtonElement>("notice-retry");
+  let retryNotice: (() => void) | undefined;
+  function showNotice(text: string, retry?: () => void): void {
+    noticeText.textContent = text;
+    retryNotice = retry;
+    noticeRetry.hidden = !retry;
+    notice.hidden = false;
+  }
+  function hideNotice(): void {
+    notice.hidden = true;
+    retryNotice = undefined;
+  }
+  noticeRetry.addEventListener("click", () => { const retry = retryNotice; hideNotice(); retry?.(); });
+  get("notice-close").addEventListener("click", () => { hideNotice(); mapCanvas.focus(); });
   // What to look for in each example, shown once per example until dismissed.
   const hints: Record<string, string> = {
     wise0855: "WISE 0855 is the coldest known brown dwarf, 7.4 light-years away. Press <b>Blink</b> to watch it move.",
@@ -4111,7 +4268,9 @@ declare const ASSETS: {
     }
     return await load();
   };
-  if (sharedRa !== null && sharedDec !== null) {
+  // Links to a saved example name it; it then loads from its bundle, with no archive search.
+  const sharedExample = params.get("example") && ASSETS.examples.includes(params.get("example")!) ? params.get("example")! : undefined;
+  if (sharedRa !== null && sharedDec !== null && !sharedExample) {
     const sharedBand = Number(params.get("band"));
     if (Number.isInteger(sharedBand) && sharedBand >= 1 && sharedBand <= 6) searchBand = sharedBand;
     if (params.get("fov")) fovSelect.value = params.get("fov")!;
@@ -4128,15 +4287,28 @@ declare const ASSETS: {
     }
     const sharedName = params.get("name")?.trim().slice(0, 80) || undefined;
     query.value = sharedName ?? `${ra.toFixed(5)}, ${dec.toFixed(5)}`;
-    void searchFromOptions(ra, dec, params.get("asof") ?? undefined, sharedName ? { label: sharedName } : undefined, {
-      waveRange: initialWaveRange,
-      preserveFrame: sharedView,
-    }).then(() => {
-      if (currentSelection) { applyInitialCamera(); restoreMark(); return; }
-      // The shared field failed to load: show the bundled example, keep the reason visible.
-      const failure = status.textContent ?? "";
-      return load().then(() => { applyInitialCamera(); status.textContent = failure; });
-    });
+    const restoreShared = async (): Promise<void> => {
+      await searchFromOptions(ra, dec, params.get("asof") ?? undefined, sharedName ? { label: sharedName } : undefined, {
+        waveRange: initialWaveRange,
+        preserveFrame: sharedView,
+      });
+      if (currentSelection?.asof && currentSelection.ra === ra && currentSelection.dec === dec) { applyInitialCamera(); restoreMark(); return; }
+      // The shared field did not load. Say so and keep the link in the address bar; never
+      // show a different field at the shared camera position as if it were the shared view.
+      if (!series) await load();
+      frameField();
+      showNotice(`Could not open the field in this link (${sharedName ?? `${ra.toFixed(4)}°, ${dec.toFixed(4)}°`}): ${lastSearchError || status.textContent} Showing ${fieldName()} instead.`, () => void restoreShared());
+    };
+    void restoreShared();
+  } else if (sharedExample) {
+    const label = SkyShift.TARGETS.find((target) => target.id === sharedExample)?.label ?? sharedExample;
+    const restoreExample = async (): Promise<void> => {
+      if (await openExample(sharedExample, { waveRange: initialWaveRange })) { applyInitialCamera(); restoreMark(); return; }
+      if (!series) await loadBundledInitial();
+      frameField();
+      showNotice(`Could not open ${label} from this link${lastSearchError ? `: ${lastSearchError}` : "."} Showing ${fieldName()} instead.`, () => void restoreExample());
+    };
+    void restoreExample();
   } else {
     void loadBundledInitial().then(() => { applyInitialCamera(); maybeShowHint(); restoreMark(); });
   }

@@ -20,7 +20,7 @@
     <div class="search-area">
       <div class="search-column">
       <form id="search" class="searchbox" role="search" autocomplete="off">
-        <button id="menu" class="icon-button brand-button" type="button" aria-label="Field details" aria-controls="panel" aria-expanded="false"><span class="brand-mark" aria-hidden="true"></span></button>
+        <button id="menu" class="icon-button brand-button" type="button" aria-label="Tools and field details" title="Tools and field details (I)" aria-controls="panel" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg><span class="menu-label" aria-hidden="true">Tools</span></button>
         <label class="sr-only" for="query">Search an object by name, or RA and Dec</label>
         <input id="query" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="suggestions" aria-describedby="query-preview" spellcheck="false" enterkeyhint="search" placeholder="Search a star, galaxy or RA, Dec">
         <button id="query-clear" class="icon-button" type="button" aria-label="Clear search" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
@@ -62,7 +62,7 @@
         <h2 id="movers-heading">Movers &amp; changes</h2>
         <p id="movers-subtitle" class="movers-subtitle">Across all visits in this field</p>
       </div>
-      <button id="movers-toggle" class="icon-button movers-toggle" type="button" aria-expanded="true" aria-controls="movers-body" title="Collapse or expand mover list"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+      <button id="movers-toggle" class="icon-button movers-toggle" type="button" aria-expanded="true" aria-controls="movers-body" aria-label="Show or hide the movers list" title="Show or hide the movers list"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
     </div>
     <div id="movers-body" class="movers-body">
       <div id="movers-filters" class="movers-filters" role="group" aria-label="Filter detected objects">
@@ -71,7 +71,8 @@
         <button type="button" data-filter="variable">Brightness <span id="count-variable">0</span></button>
       </div>
       <ul id="movers-list" class="movers-list" aria-label="Detected moving and variable objects in current field"></ul>
-      <p id="movers-empty" class="movers-empty" hidden>No clear movement or brightness changes across the visits.</p>
+      <p id="movers-empty" class="movers-empty" hidden>No candidates detected across the visits.</p>
+      <button id="movers-show-all" class="link-button movers-show-all" type="button" hidden>Show all</button>
     </div>
   </aside>
 
@@ -261,7 +262,7 @@
   </aside>
 
   <div class="layers-area" id="layers-area">
-    <button id="layers-toggle" class="layers-button" type="button" aria-expanded="false" aria-controls="layers"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 4 8 4.5-8 4.5-8-4.5z"/><path d="m4 12.5 8 4.5 8-4.5M4 16.5 12 21l8-4.5"/></svg><span>Layers</span></button>
+    <button id="layers-toggle" class="layers-button" type="button" aria-label="Layers and display" aria-expanded="false" aria-controls="layers"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 4 8 4.5-8 4.5-8-4.5z"/><path d="m4 12.5 8 4.5 8-4.5M4 16.5 12 21l8-4.5"/></svg><span>Layers</span></button>
     <div id="layers" class="layers card" role="group" aria-label="Layers and display" hidden>
       <fieldset class="segmented">
         <legend>Brightness stretch</legend>
@@ -321,6 +322,13 @@
       <p id="status" role="status">Preparing viewer…</p>
       <button id="cancel" type="button" hidden>Cancel</button>
     </div>
+    <div id="notice" class="notice" role="alert" hidden>
+      <p id="notice-text"></p>
+      <div class="notice-actions">
+        <button id="notice-retry" class="primary" type="button">Try again</button>
+        <button id="notice-close" class="icon-button" type="button" aria-label="Dismiss message"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+      </div>
+    </div>
     <div id="candidates" class="whats-here candidates" role="group" aria-labelledby="candidate-title" hidden>
       <div class="here-text">
         <strong id="candidate-title">Candidate</strong>
@@ -356,12 +364,18 @@
     <div id="quick-spectrum-card" class="whats-here quick-spectrum" hidden role="group" aria-labelledby="quick-spectrum-title">
       <div class="spectrum-card-head">
         <div class="here-text"><strong id="quick-spectrum-title">Spectrum</strong><span id="quick-spectrum-status" role="status"></span></div>
-        <button id="quick-spectrum-close" class="icon-button" type="button" aria-label="Close spectrum">×</button>
+        <button id="quick-spectrum-close" class="icon-button" type="button" aria-label="Close spectrum"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
       </div>
-      <label class="spectrum-metric">Plot <select id="quick-spectrum-metric">
-        <option value="surfaceBrightness">Surface brightness (MJy/sr)</option>
-        <option value="flux">Approximate flux (Jy)</option>
-      </select></label>
+      <div class="spectrum-options">
+        <label class="spectrum-metric">Plot <select id="quick-spectrum-metric">
+          <option value="surfaceBrightness">Surface brightness (MJy/sr)</option>
+          <option value="flux">Approximate flux (Jy)</option>
+        </select></label>
+        <label class="spectrum-metric">Range <select id="quick-spectrum-range">
+          <option value="data">Measured wavelengths</option>
+          <option value="all">All bands (0.75–5.01 μm)</option>
+        </select></label>
+      </div>
       <svg id="quick-spectrum-plot" viewBox="0 0 620 300" role="img" aria-label="Surface brightness by wavelength"></svg>
       <div id="quick-spectrum-legend" class="bands-legend" aria-label="SPHEREx detector band colors"></div>
       <output id="quick-spectrum-hover" class="spectrum-hover">Hover or focus a measurement for details.</output>
@@ -390,6 +404,7 @@
       <div class="compare" aria-label="Compare observations" role="group">
         <div class="pair">
           <label><span>A</span><select id="reference-frame" aria-label="Visit A, reference"></select></label>
+          <button id="swap-pair" class="swap-pair" type="button" aria-label="Swap visits A and B" title="Swap A and B"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h12m-3-3 3 3-3 3M17 17H5m3-3-3 3 3 3"/></svg></button>
           <label><span>B</span><select id="comparison-frame" aria-label="Visit B, comparison"></select></label>
         </div>
         <div class="compare-actions">
@@ -429,7 +444,8 @@
         <ul>
           <li>Search any star, galaxy or nebula by name, or enter RA and Dec.</li>
           <li>Drag to move; scroll or pinch to zoom; click or tap a spot for details.</li>
-          <li><b>Layers</b> changes the infrared band, switches on colour and adds catalogue markers. The menu at the top left has more tools.</li>
+          <li><b>Layers</b> changes the infrared band, switches on colour and adds catalogue markers.</li>
+          <li><b>Tools</b> (☰, top left) has the spectrum, comparison star, colour image, narrow wavelengths and data quality.</li>
         </ul>
       </section>
       <details class="shortcut-list">

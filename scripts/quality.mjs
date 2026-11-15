@@ -38,7 +38,14 @@ function execute({key, x, y}) {
       let data;
       try { data = JSON.parse(output); }
       catch { reject(Error('Flag inspection returned an invalid response.')); return; }
-      if (code !== 0 || data.error) reject(Error(data.error || 'Flag inspection failed.')); else resolve(data);
+      if (data.error === 'archive-unreachable') {
+        // Keep library and TLS details in the server log, not in the interface.
+        console.error(`[quality] ${key}: ${data.detail}`);
+        const error = Error('Could not read the quality flags from the SPHEREx archive right now. Try again in a minute.');
+        error.status = 502;
+        reject(error);
+      } else if (code !== 0 || data.error) reject(Error(data.error || 'Flag inspection failed.'));
+      else resolve(data);
     });
   });
 }

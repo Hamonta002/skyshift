@@ -13,8 +13,9 @@ COPY . .
 RUN npm run build
 
 FROM docker.io/library/node:22-bookworm-slim
-# Astropy is only needed by the optional FLAGS inspector (/api/quality).
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-astropy \
+# Astropy is only needed by the optional FLAGS inspector (/api/quality). Python's
+# HTTPS requests need the system CA bundle, which the slim base image leaves out.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates python3 python3-astropy \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /app/dist ./dist
