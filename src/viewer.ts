@@ -27,6 +27,7 @@ declare const ASSETS: {
   const menuButton = get<HTMLButtonElement>("menu");
   const query = get<HTMLInputElement>("query");
   const bandSelect = get<HTMLSelectElement>("band");
+  const layerBandSelect = get<HTMLSelectElement>("layer-band");
   const fovSelect = get<HTMLSelectElement>("fov");
   const gridToggle = get<HTMLInputElement>("grid");
   const observation = get("observation");
@@ -115,6 +116,7 @@ declare const ASSETS: {
     for (const button of [next, previous, play]) button.disabled = unavailable || (series?.frames.length ?? 0) < 2;
     for (const button of visits) button.disabled = unavailable;
     for (const select of [referenceSelect, comparisonSelect]) select.disabled = unavailable || (series?.frames.length ?? 0) < 2;
+    layerBandSelect.disabled = busy;
     modeSelect.disabled = unavailable;
     blink.disabled = unavailable || !canCompare() || modeSelect.value === "exposures";
     difference.disabled = blink.disabled;
@@ -300,8 +302,15 @@ declare const ASSETS: {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = "#05080f";
     ctx.fillRect(0, 0, W, H);
+    const vignette = ctx.createRadialGradient(W * 0.5, H * 0.46, 0, W * 0.5, H * 0.46, Math.max(W, H) * 0.72);
+    vignette.addColorStop(0, "rgba(30, 47, 72, 0.20)");
+    vignette.addColorStop(0.62, "rgba(15, 25, 42, 0.12)");
+    vignette.addColorStop(1, "rgba(1, 3, 8, 0.34)");
+    ctx.fillStyle = vignette;
+    ctx.fillRect(0, 0, W, H);
     if (gridToggle.checked) drawGraticule(ctx, W, H, k);
     const corners = drawField(ctx, k);
+    drawOutsideMask(ctx, corners);
     drawMarkers(ctx, k);
     drawDiscovery(ctx, k);
     placeFieldChrome(corners);
@@ -431,21 +440,49 @@ declare const ASSETS: {
     return corners;
   }
 
+  /** Lightly shade and hatch sky outside the localized SPHEREx stamp. */
+  function drawOutsideMask(ctx: CanvasRenderingContext2D, corners: [number, number][] | null): void {
+    const { width: W, height: H } = screen;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, W, H);
+    if (corners) {
+      ctx.moveTo(corners[0][0], corners[0][1]);
+      for (let i = 1; i < corners.length; i++) ctx.lineTo(corners[i][0], corners[i][1]);
+      ctx.closePath();
+    }
+    ctx.clip("evenodd");
+    ctx.fillStyle = "rgba(1, 4, 10, 0.18)";
+    ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = "rgba(135, 166, 207, 0.045)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = -H; x < W + H; x += 32) {
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x + H, H);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
   function drawMarkers(ctx: CanvasRenderingContext2D, k: number): void {
     const pixelPx = 2 ** camera.z;
     if (playback !== "blink" && !arithmeticView()) {
       const mjd = frameMjd();
       const year = mjd === undefined ? null : 2000 + (mjd - 51544.5) / 365.25;
-      const radius = Math.max(5, Math.min(40, 1.4 * pixelPx));
+      const radius = Math.max(3, Math.min(8, 1.2 * pixelPx));
       for (const [name, sources] of Object.entries(catalogues)) {
         if (!get<HTMLInputElement>(name).checked) continue;
-        ctx.strokeStyle = name === "gaia" ? "#f3c97a" : "#80bfff";
+        ctx.strokeStyle = name === "gaia" ? "#55d9df" : "#f3c97a";
         ctx.lineWidth = 1.2;
         for (const source of sources) {
           const [ra, dec] = SkyShift.cataloguePosition(source, year);
           const p = toScreen(ra, dec, k);
           if (!p || p[0] < -radius || p[1] < -radius || p[0] > screen.width + radius || p[1] > screen.height + radius) continue;
-          ctx.beginPath(); ctx.arc(p[0], p[1], radius, 0, 2 * Math.PI); ctx.stroke();
+          ctx.beginPath();
+          if (name === "gaia") ctx.arc(p[0], p[1], radius, 0, 2 * Math.PI);
+          else { ctx.moveTo(p[0], p[1] - radius); ctx.lineTo(p[0] + radius, p[1]); ctx.lineTo(p[0], p[1] + radius); ctx.lineTo(p[0] - radius, p[1]); ctx.closePath(); }
+          ctx.stroke();
         }
       }
       if (marker.checked && isBundled && mjd !== undefined) {
@@ -490,7 +527,9 @@ declare const ASSETS: {
       const cx = (minX + maxX) / 2;
       fieldLabel.style.transform = `translate(${cx}px, ${small ? (minY + maxY) / 2 - 14 : minY - 6}px) translate(-50%, -100%)`;
       fieldLabel.dataset.small = String(small);
-      get("field-date").textContent = small ? fieldName() : fieldDateText;
+      const angularSize = fieldSide() * fixture.scale / 60;
+      const sizeLabel = `${angularSize < 10 ? angularSize.toFixed(1) : angularSize.toFixed(0)}′ cutout`;
+      get("field-date").textContent = `${small ? fieldName() : fieldDateText} · ${sizeLabel}`;
     }
     offscreen.hidden = onScreen || !series;
     if (!onScreen && series) {
@@ -541,16 +580,20 @@ declare const ASSETS: {
   function panScreen(dx: number, dy: number): void {
     setCamera(SkyShift.panBy(camera, dx, dy, scaleNow()));
   }
-  /** Largest whole zoom level up to the default at which the field fits the visible map. */
+  /** Frame the loaded cutout to roughly 78% of the unobstructed viewport height. */
   function fitLevel(): number {
-    const room = Math.min(visible.right - visible.left, visible.bottom - visible.top) - 4;
-    return SkyShift.clampZoom(Math.min(SkyShift.MAP_DEFAULT_ZOOM, Math.floor(Math.log2(Math.max(room, 1) / fieldSide()))));
+    const height = Math.max(visible.bottom - visible.top, 1);
+    const targetPixels = Math.max(height * 0.78, 1);
+    // z is log2(screen CSS px / native FITS image pixel); therefore
+    // side * 2^z is the projected cutout height in CSS pixels.
+    return SkyShift.clampZoom(Math.log2(targetPixels / fieldSide()));
   }
   function frameField(z = fitLevel()): void {
     stopZoomAnimation();
-    const k = SkyShift.pxPerArcsec(z, fixture.scale);
-    const [vx, vy] = visibleCentre();
-    camera = SkyShift.panBy({ ra: fixture.ra0, dec: fixture.dec0, z }, vx - screen.width / 2, vy - screen.height / 2, k);
+    // Keep at=ra,dec anchored to the field WCS centre. At low zoom, moving the
+    // camera by the dock's screen-space offset can otherwise become several
+    // arcminutes and incorrectly activate “Search this area”.
+    camera = { ra: fixture.ra0, dec: fixture.dec0, z };
     cameraIsDefault = z === fitLevel();
     cameraChanged();
   }
@@ -726,13 +769,138 @@ declare const ASSETS: {
     const viewLabel = arithmeticView() ? (modeSelect.value === "difference" ? "B − A" : "A + B") : labelFor(frame);
     get("here-title").textContent = pixel.inside ? `${fieldName()} · ${viewLabel}` : "Sky position";
     get("here-coords").textContent = `${SkyShift.formatRa(ra, 0.01)} ${SkyShift.formatDec(dec, 0.1)} · ${ra.toFixed(5)}°, ${dec.toFixed(5)}°`;
-    get("here-value").textContent = pixel.inside
-      ? Number.isFinite(pixel.value) ? `${valueText(pixel.value)} at this pixel` : "No data at this pixel"
-      : `${formatAngle(SkyShift.separation(ra, dec, fixture.ra0, fixture.dec0))} from the ${fieldName()} field centre`;
+    const value = get("here-value");
+    value.textContent = !pixel.inside ? "Outside SPHEREx cutout footprint"
+      : Number.isFinite(pixel.value) ? pixel.value <= 0
+        ? `${valueText(pixel.value)} (bg-subtracted sky noise floor)`
+        : `${valueText(pixel.value)} (bg-subtracted) at this pixel`
+        : "No data at this pixel";
+    value.title = "SPHEREx calibrated surface brightness in MegaJanskys per steradian relative to the local background.";
     get("here-track").hidden = !pixel.inside;
+    get<HTMLButtonElement>("here-spectrum-open").disabled = !pixel.inside || !Number.isFinite(pixel.value);
     get("here-search").hidden = pixel.inside || embed;
   }
+  const quickSpectrumCard = get("quick-spectrum-card");
+  const quickSpectrumPlot = document.getElementById("quick-spectrum-plot") as unknown as SVGSVGElement;
+  let spectrumRequest = 0;
+  let spectrumAbort: AbortController | undefined;
+  const svgNS = "http://www.w3.org/2000/svg";
+  function svgElement(name: string, attributes: Record<string, string> = {}): SVGElement {
+    const node = document.createElementNS(svgNS, name);
+    for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, value);
+    return node;
+  }
+  function plotSpectrum(points: SkyShift.SpectrumPoint[], title: string, band: number): void {
+    const left = 64, top = 22, width = 528, height = 214, bottom = top + height;
+    const valid = points.filter((point) => Number.isFinite(point.wavelength) && Number.isFinite(point.surfaceBrightness));
+    quickSpectrumPlot.replaceChildren();
+    const xAt = (wavelength: number) => left + (wavelength - 0.75) / (5.01 - 0.75) * width;
+    const values = valid.map((point) => point.surfaceBrightness);
+    let min = Math.min(0, ...values), max = Math.max(0, ...values);
+    if (max - min < 1e-12) { min -= 1e-6; max += 1e-6; }
+    const margin = (max - min) * 0.06;
+    min -= margin; max += margin;
+    const yAt = (value: number) => top + (max - value) / (max - min) * height;
+    const bandRanges: [number, number, string][] = [
+      [0.75, 1.12, "#78b7ff"], [1.10, 1.65, "#72d3d0"], [1.63, 2.43, "#92d778"],
+      [2.40, 3.85, "#e3cf6c"], [3.81, 4.43, "#f0a45c"], [4.41, 5.01, "#ff7d91"],
+    ];
+    const colors = ["#78b7ff", "#72d3d0", "#92d778", "#e3cf6c", "#f0a45c", "#ff7d91"];
+    const bandAt = (wavelength: number) => {
+      let best = 0, distance = Infinity;
+      bandRanges.forEach(([lo, hi], index) => {
+        const mid = (lo + hi) / 2, delta = Math.abs(mid - wavelength);
+        if (wavelength >= lo - 0.04 && wavelength <= hi + 0.04 && delta < distance) { best = index; distance = delta; }
+      });
+      return best;
+    };
+    quickSpectrumPlot.append(svgElement("rect", { x: "0", y: "0", width: "620", height: "300", rx: "10", fill: "#0b111c" }));
+    bandRanges.forEach(([lo, hi], index) => quickSpectrumPlot.append(svgElement("rect", {
+      x: String(xAt(lo)), y: String(top), width: String(Math.max(1, xAt(hi) - xAt(lo))), height: String(height),
+      fill: colors[index], "fill-opacity": "0.055",
+    })));
+    for (let i = 0; i <= 4; i++) {
+      const y = top + height * i / 4;
+      quickSpectrumPlot.append(svgElement("line", { x1: String(left), y1: String(y), x2: String(left + width), y2: String(y), stroke: "#273548", "stroke-width": "1" }));
+      const tick = svgElement("text", { x: String(left - 8), y: String(y + 4), fill: "#9baabe", "font-size": "11", "text-anchor": "end" });
+      tick.textContent = (max - (max - min) * i / 4).toPrecision(3);
+      quickSpectrumPlot.append(tick);
+    }
+    quickSpectrumPlot.append(svgElement("line", { x1: String(left), y1: String(top), x2: String(left), y2: String(bottom), stroke: "#9baabe" }));
+    quickSpectrumPlot.append(svgElement("line", { x1: String(left), y1: String(bottom), x2: String(left + width), y2: String(bottom), stroke: "#9baabe" }));
+    for (const wavelength of [0.75, 1.5, 2.5, 3.5, 4.5, 5.01]) {
+      const x = xAt(wavelength);
+      quickSpectrumPlot.append(svgElement("line", { x1: String(x), y1: String(bottom), x2: String(x), y2: String(bottom + 4), stroke: "#9baabe" }));
+      const tick = svgElement("text", { x: String(x), y: String(bottom + 18), fill: "#9baabe", "font-size": "11", "text-anchor": "middle" });
+      tick.textContent = wavelength.toFixed(wavelength === 0.75 || wavelength === 5.01 ? 2 : 1);
+      quickSpectrumPlot.append(tick);
+    }
+    const xLabel = svgElement("text", { x: String(left + width / 2), y: "288", fill: "#dbe9fa", "font-size": "12", "text-anchor": "middle" });
+    xLabel.textContent = "Wavelength (μm) · 0.75–5.01";
+    const yLabel = svgElement("text", { x: "15", y: String(top + height / 2), fill: "#dbe9fa", "font-size": "12", "text-anchor": "middle", transform: `rotate(-90 15 ${top + height / 2})` });
+    yLabel.textContent = "Surface brightness (MJy/sr)";
+    quickSpectrumPlot.append(xLabel, yLabel);
+    const legend = get("quick-spectrum-legend");
+    legend.replaceChildren(...bandRanges.map(([lo, hi], index) => {
+      const item = document.createElement("span");
+      const swatch = document.createElement("i"); swatch.style.backgroundColor = colors[index];
+      item.append(swatch, document.createTextNode(`B${index + 1} ${lo.toFixed(2)}–${hi.toFixed(2)}`));
+      return item;
+    }));
+    for (const point of valid) {
+      const pBand = bandAt(point.wavelength), circle = svgElement("circle", {
+        cx: String(xAt(point.wavelength)), cy: String(yAt(point.surfaceBrightness)), r: "4.3", fill: colors[pBand], stroke: "#08111b", "stroke-width": "1",
+        tabindex: "0", role: "img", "aria-label": `Band ${pBand + 1}, ${point.wavelength.toFixed(3)} microns, ${point.surfaceBrightness.toPrecision(4)} MJy per steradian`,
+      });
+      const detail = `Band ${pBand + 1} · ${point.wavelength.toFixed(3)} μm · ${point.surfaceBrightness.toPrecision(4)} MJy/sr · ${point.date}`;
+      const nativeTitle = svgElement("title"); nativeTitle.textContent = detail; circle.append(nativeTitle);
+      const readout = get("quick-spectrum-hover");
+      circle.addEventListener("pointerenter", () => { readout.textContent = detail; });
+      circle.addEventListener("focus", () => { readout.textContent = detail; });
+      quickSpectrumPlot.append(circle);
+    }
+    get("quick-spectrum-title").textContent = `${title} · spectrum`;
+    get("quick-spectrum-status").textContent = valid.length
+      ? `${valid.length} measurements · currently loaded Band ${band} only · aperture-mean, background-subtracted.`
+      : `No usable measurements in currently loaded Band ${band}.`;
+  }
+  async function generateCoordinateSpectrum(ra: number, dec: number, label: string): Promise<void> {
+    spectrumAbort?.abort();
+    const controller = new AbortController(); spectrumAbort = controller;
+    const token = ++spectrumRequest, requestedFixture = fixture, band = Number(bandSelect.value);
+    quickSpectrumCard.hidden = false;
+    quickSpectrumPlot.replaceChildren();
+    get("quick-spectrum-title").textContent = `${label} · spectrum`;
+    get("quick-spectrum-status").textContent = `Sampling available exposures at ${ra.toFixed(5)}°, ${dec.toFixed(5)}°…`;
+    get("quick-spectrum-hover").textContent = "Hover or focus a measurement for details.";
+    try {
+      const points = await SkyShift.quickSpectrum(requestedFixture, controller.signal, { ra, dec });
+      if (token !== spectrumRequest || fixture !== requestedFixture) return;
+      if (!points.length) throw new Error(`No usable wavelength samples at this coordinate in Band ${band}.`);
+      plotSpectrum(points, label, band);
+    } catch (error) {
+      if (token !== spectrumRequest) return;
+      get("quick-spectrum-status").textContent = error instanceof Error ? error.message : String(error);
+    }
+  }
+  function closeQuickSpectrum(): void {
+    spectrumAbort?.abort(); spectrumRequest++; quickSpectrumCard.hidden = true;
+  }
   get("here-close").addEventListener("click", () => { hideHere(); mapCanvas.focus(); });
+  get("here-spectrum-open").addEventListener("click", () => {
+    if (selected) void generateCoordinateSpectrum(selected.ra, selected.dec, fieldName());
+  });
+  get("candidate-spectrum").addEventListener("click", () => {
+    const candidate = candidates[candidateIndex];
+    if (candidate) {
+      const [ra, dec] = SkyShift.gridToSky(fixture, ...candidate.to);
+      void generateCoordinateSpectrum(ra, dec, `Mover candidate ${candidateIndex + 1}`);
+    }
+  });
+  get("object-spectrum").addEventListener("click", () => {
+    if (tracked) void generateCoordinateSpectrum(tracked.start.ra, tracked.start.dec, fieldName());
+  });
+  get("quick-spectrum-close").addEventListener("click", closeQuickSpectrum);
   get("here-center").addEventListener("click", () => {
     if (!selected) return;
     const p = toScreen(selected.ra, selected.dec);
@@ -758,16 +926,22 @@ declare const ASSETS: {
   function drawCatalogueStatus(): void { render(); }
   async function toggleCatalogue(name: "gaia" | "wise"): Promise<void> {
     const checkbox = get<HTMLInputElement>(name), output = get("catalogue-status");
+    const count = get(name === "gaia" ? "gaia-count" : "wise-count");
     if (!checkbox.checked) { drawCatalogueStatus(); return; }
     if (!catalogues[name]) {
       const requestedRa = fixture.ra0, requestedDec = fixture.dec0;
+      const visibleFov = screen.height / Math.max(scaleNow(), 1e-9) / 60;
+      const queryFov = Math.min(20, Math.max(currentSelection?.fov ?? fixture.half * 2 * fixture.scale / 60, visibleFov * 1.4));
       output.textContent = `Loading ${name === "gaia" ? "Gaia DR3" : "CatWISE2020"}…`;
+      count.textContent = "loading…";
       try {
-        const q = new URLSearchParams({ catalogue: name, ra: String(fixture.ra0), dec: String(fixture.dec0), fov: String(currentSelection?.fov ?? fixture.half * 2 * fixture.scale / 60) });
+        const q = new URLSearchParams({ catalogue: name, ra: String(fixture.ra0), dec: String(fixture.dec0), fov: String(queryFov) });
         const response = await fetch(`/api/catalogue?${q}`); const result = await response.json();
         if (!response.ok) throw new Error(result.error || "Catalogue unavailable.");
         if (fixture.ra0 !== requestedRa || fixture.dec0 !== requestedDec || !checkbox.checked) return;
         catalogues[name] = result.sources;
+        count.textContent = `${result.sources.length} sources`;
+        count.title = result.truncated ? "250-source display limit reached" : `${result.sources.length} catalogue sources in ${queryFov.toFixed(1)}′ field`;
         output.textContent = `${result.catalogue}: ${result.sources.length} sources${result.truncated ? " (limit reached)" : ""}. Gaia markers use linear proper motion; CatWISE positions are catalogue positions.`;
         const list = document.createElement("details");
         const summary = document.createElement("summary"); summary.textContent = `${result.catalogue} source IDs`;
@@ -775,14 +949,22 @@ declare const ASSETS: {
         list.append(summary, text); get("catalogue-list").append(list);
       } catch (error) {
         checkbox.checked = false;
+        count.textContent = "unavailable";
         output.textContent = error instanceof TypeError ? "Catalogue overlays need the SkyShift server (npm run dev)." : error instanceof Error ? error.message : String(error);
       }
     }
     drawCatalogueStatus();
   }
   for (const name of ["gaia", "wise"] as const) get<HTMLInputElement>(name).addEventListener("change", () => void toggleCatalogue(name));
+  function enableCataloguesForDiscovery(): void {
+    for (const name of ["gaia", "wise"] as const) {
+      const checkbox = get<HTMLInputElement>(name);
+      if (!checkbox.checked) { checkbox.checked = true; void toggleCatalogue(name); }
+    }
+  }
   function clearCatalogues(): void {
     for (const name of ["gaia", "wise"]) { delete catalogues[name]; get<HTMLInputElement>(name).checked = false; }
+    get("gaia-count").textContent = get("wise-count").textContent = "not loaded";
     get("catalogue-list").replaceChildren();
     get("catalogue-status").textContent = "";
   }
@@ -1173,6 +1355,17 @@ declare const ASSETS: {
   marker.addEventListener("change", render);
   for (const select of [referenceSelect, comparisonSelect]) select.addEventListener("change", () => {
     pause();
+    if (referenceSelect.value === comparisonSelect.value && visits.length > 1) {
+      if (select === referenceSelect) {
+        const priorA = referenceSelect.dataset.previous ?? "";
+        comparisonSelect.value = priorA !== referenceSelect.value ? priorA : String((Number(referenceSelect.value) + 1) % visits.length);
+      } else {
+        const priorB = comparisonSelect.dataset.previous ?? "";
+        referenceSelect.value = priorB !== comparisonSelect.value ? priorB : String((Number(comparisonSelect.value) + 1) % visits.length);
+      }
+    }
+    referenceSelect.dataset.previous = referenceSelect.value;
+    comparisonSelect.dataset.previous = comparisonSelect.value;
     if (modeSelect.value === "blink") frame = Number(referenceSelect.value);
     updateVisitBadges();
     commitView();
@@ -1235,6 +1428,7 @@ declare const ASSETS: {
     if (!(x >= 0 && y >= 0 && x < side && y < side)) { status.textContent = "Tracking works on sources inside the SPHEREx field."; return false; }
     const points = SkyShift.trackSource(series.frames, side, startFrame, x, y, fixture, frameMjds());
     if (!points) { status.textContent = "No source bright enough to track here. Click on a star or a bright spot."; return false; }
+    enableCataloguesForDiscovery();
     const motion = SkyShift.fitMotion(points), light = SkyShift.brightness(points, series.frames.length);
     const at = points.find((p) => p.frame === startFrame) ?? points[0];
     tracked = {
@@ -1424,6 +1618,7 @@ declare const ASSETS: {
   // Mover finder: sources that moved or changed between A and B.
   function findMoversNow(): void {
     if (busy || !series) return;
+    enableCataloguesForDiscovery();
     if (!canCompare() || modeSelect.value === "exposures") {
       status.textContent = "Choose two different visits as A and B, in the visit-stack view, to look for movers.";
       return;
@@ -1768,6 +1963,7 @@ declare const ASSETS: {
     currentTargetId = targetId;
     for (const chip of chips.querySelectorAll<HTMLButtonElement>("button")) chip.setAttribute("aria-pressed", String(chip.dataset.target === targetId));
     bandSelect.value = String(band);
+    layerBandSelect.value = String(band);
     if (targetId !== "wise0855") hint.hidden = true;
   }
 
@@ -1856,8 +2052,13 @@ declare const ASSETS: {
       const index = unchanged && select.value !== "" ? Number(select.value) : firstLoad && oneBased !== null ? Number(oneBased) - 1 : fallback;
       return String(Number.isInteger(index) ? Math.max(0, Math.min(index, labels.length - 1)) : fallback);
     }
-    const a = resolve(referenceSelect, params.get("a") ?? (legacyA === null ? null : String(Number(legacyA) + 1)), defaults[0] ?? 0);
-    const b = resolve(comparisonSelect, params.get("b") ?? legacyB, defaults.at(-1) ?? 0);
+    let a = resolve(referenceSelect, params.get("a") ?? (legacyA === null ? null : String(Number(legacyA) + 1)), defaults[0] ?? 0);
+    let b = resolve(comparisonSelect, params.get("b") ?? legacyB, defaults.at(-1) ?? 0);
+    if (labels.length > 1 && a === b) {
+      a = String(defaults[0] ?? 0);
+      b = String(defaults.at(-1) ?? (Number(a) === 0 ? 1 : 0));
+      if (a === b) b = String(Number(a) === 0 ? 1 : 0);
+    }
     for (const [select, value] of [[referenceSelect, a], [comparisonSelect, b]] as const) {
       select.replaceChildren(...labels.map((label, index) => {
         const option = document.createElement("option");
@@ -1867,6 +2068,8 @@ declare const ASSETS: {
       }));
       select.value = value;
     }
+    referenceSelect.dataset.previous = referenceSelect.value;
+    comparisonSelect.dataset.previous = comparisonSelect.value;
     pairSequence = key;
     visits = labels.map((label, index) => {
       const button = document.createElement("button");
@@ -1917,6 +2120,7 @@ declare const ASSETS: {
   async function openExample(id: string): Promise<void> {
     const target = SkyShift.TARGETS.find((item) => item.id === id);
     if (!target || busy) return;
+    closeQuickSpectrum();
     closeDrop();
     if (target.id === "wise0855") {
       const previousFrame = frame;
@@ -1971,9 +2175,24 @@ declare const ASSETS: {
     }
     await search({ ra, dec, band, fov, from, to }, savedAsof, target);
   }
+  layerBandSelect.addEventListener("change", async () => {
+    const nextBand = Number(layerBandSelect.value), previousBand = Number(bandSelect.value);
+    if (busy || !Number.isInteger(nextBand) || nextBand < 1 || nextBand > 6) {
+      layerBandSelect.value = String(previousBand); return;
+    }
+    const ra = currentSelection?.ra ?? fixture.ra0, dec = currentSelection?.dec ?? fixture.dec0;
+    const previousSelection = currentSelection;
+    fovSelect.value = String(currentSelection?.fov ?? 5);
+    bandSelect.value = String(nextBand);
+    await searchFromOptions(ra, dec);
+    if (currentSelection === previousSelection || currentSelection?.band !== nextBand) {
+      bandSelect.value = String(previousBand); layerBandSelect.value = bandSelect.value;
+    }
+  });
 
   async function search(request: { ra: number; dec: number; band: number; fov: number; from: string; to: string }, savedAsof?: string, named?: SkyShift.Target): Promise<void> {
     if (busy) return;
+    closeQuickSpectrum();
     const { ra, dec, band, fov, from, to } = request;
     const cutoff = savedAsof ?? new Date().toISOString();
     const cutoffMs = Date.parse(cutoff);
@@ -2079,6 +2298,7 @@ declare const ASSETS: {
     if (shortcuts.open) return;
     if (!searchDrop.hidden) { closeDrop(); return; }
     if (!layers.hidden) { setLayers(false); layersToggle.focus(); return; }
+    if (!quickSpectrumCard.hidden) { closeQuickSpectrum(); return; }
     if (selected) { hideHere(); mapCanvas.focus(); return; }
     if (!candidateCard.hidden) { closeCandidates(); mapCanvas.focus(); return; }
     if (!panel.hidden) { closePanel(); return; }

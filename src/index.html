@@ -71,6 +71,7 @@
           <canvas id="object-curve" width="720" height="210" role="img" aria-label="Brightness per visit"></canvas>
           <figcaption>Brightness in each visit (magnitudes relative to the median; up is brighter). SPHEREx samples different wavelengths within a band from visit to visit, so part of a change can be spectral. Hollow points are saturated (lower limits).</figcaption>
         </figure>
+        <button id="object-spectrum" class="primary" type="button">Generate Spectrum</button>
         <details class="object-positions"><summary>Positions in each visit</summary><div class="table-scroll"><table id="object-table"></table></div></details>
         <div class="object-actions">
           <button id="report-link" type="button">Copy report link</button>
@@ -189,8 +190,22 @@
         <legend>Overlays</legend>
         <label><input type="checkbox" id="grid" checked> Coordinate grid</label>
         <label class="marker-setting"><input type="checkbox" id="marker"> Predicted position <small>(linear proper motion)</small></label>
-        <label><input id="gaia" type="checkbox"> Gaia DR3 sources</label>
-        <label><input id="wise" type="checkbox"> CatWISE2020 sources</label>
+        <label class="catalogue-toggle"><input id="gaia" type="checkbox"><span class="catalogue-symbol gaia-symbol" aria-hidden="true">○</span><span class="catalogue-name">Gaia DR3<small>Optical astrometry + proper motion</small></span><output id="gaia-count" class="source-count">not loaded</output></label>
+        <label class="catalogue-toggle"><input id="wise" type="checkbox"><span class="catalogue-symbol wise-symbol" aria-hidden="true">◆</span><span class="catalogue-name">WISE / NEOWISE · CatWISE2020<small>Infrared point sources</small></span><output id="wise-count" class="source-count">not loaded</output></label>
+      </fieldset>
+      <fieldset class="layer-list band-layer">
+        <legend>SPHEREx detector array</legend>
+        <label for="layer-band">Load a band
+          <select id="layer-band">
+            <option value="1">Band 1 · 0.75–1.12 μm</option>
+            <option value="2">Band 2 · 1.10–1.65 μm</option>
+            <option value="3">Band 3 · 1.63–2.43 μm</option>
+            <option value="4">Band 4 · 2.40–3.85 μm</option>
+            <option value="5">Band 5 · 3.81–4.43 μm</option>
+            <option value="6" selected>Band 6 · 4.41–5.01 μm</option>
+          </select>
+        </label>
+        <small class="band-span">Six arrays · 102 nominal channels · 0.75–5.0 μm.</small>
       </fieldset>
       <p id="catalogue-status" role="status"></p>
       <div id="catalogue-list"></div>
@@ -230,8 +245,9 @@
       <div class="here-actions">
         <button id="candidate-prev" type="button" aria-label="Previous candidate"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button>
         <button id="candidate-next" type="button" aria-label="Next candidate"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 6 6 6-6 6"/></svg></button>
-        <button id="candidate-blink" type="button">Blink</button>
-        <button id="candidate-track" class="primary" type="button">Track &amp; identify</button>
+          <button id="candidate-blink" type="button">Blink</button>
+          <button id="candidate-spectrum" type="button">Generate Spectrum</button>
+          <button id="candidate-track" class="primary" type="button">Track &amp; identify</button>
         <button id="candidate-close" class="icon-button" type="button" aria-label="Close candidates"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
       </div>
     </div>
@@ -239,15 +255,27 @@
       <div class="here-text">
         <strong id="here-title">Sky position</strong>
         <span id="here-coords"></span>
-        <span id="here-value"></span>
+        <span id="here-value" title="SPHEREx calibrated surface brightness in MegaJanskys per steradian relative to the local background."></span>
+        <small class="brightness-note">SPHEREx calibrated surface brightness in MJy/sr relative to the local background.</small>
       </div>
       <div class="here-actions">
+        <button id="here-spectrum-open" class="primary" type="button">Generate Spectrum</button>
         <button id="here-track" class="primary" type="button" title="Track and identify (T)">Track &amp; identify</button>
         <button id="here-center" type="button">Center here</button>
         <button id="here-search" type="button">Search here</button>
         <button id="here-copy" type="button">Copy</button>
         <button id="here-close" class="icon-button" type="button" aria-label="Close position card"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
       </div>
+    </div>
+    <div id="quick-spectrum-card" class="whats-here quick-spectrum" hidden role="group" aria-labelledby="quick-spectrum-title">
+      <div class="spectrum-card-head">
+        <div class="here-text"><strong id="quick-spectrum-title">On-the-fly spectrum</strong><span id="quick-spectrum-status" role="status"></span></div>
+        <button id="quick-spectrum-close" class="icon-button" type="button" aria-label="Close spectrum">×</button>
+      </div>
+      <svg id="quick-spectrum-plot" viewBox="0 0 620 300" role="img" aria-label="Surface brightness by wavelength"></svg>
+      <div id="quick-spectrum-legend" class="bands-legend" aria-label="SPHEREx detector band colors"></div>
+      <output id="quick-spectrum-hover" class="spectrum-hover">Hover or focus a measurement for details.</output>
+      <small class="spectrum-coverage">Only exposures in the currently loaded detector are plotted; change the array in Layers to load another band.</small>
     </div>
   </div>
 

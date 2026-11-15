@@ -35,9 +35,9 @@ namespace SkyShift {
     for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
     return { fixture: { ...fixture, id: `${fixture.id}:wave:${min}:${max}`, dates, visitSizes, headers: selected.map((item) => item.header), pixels: btoa(binary) }, unavailable };
   }
-  export interface SpectrumPoint { wavelength: number; bandwidth: number; flux: number; date: string; mjd: number | null; productKey: string | null; }
+  export interface SpectrumPoint { wavelength: number; bandwidth: number; flux: number; surfaceBrightness: number; date: string; mjd: number | null; productKey: string | null; }
 
-  export async function quickSpectrum(fixture: PackedFixture, signal: AbortSignal): Promise<SpectrumPoint[]> {
+  export async function quickSpectrum(fixture: PackedFixture, signal: AbortSignal, position?: { ra: number; dec: number }): Promise<SpectrumPoint[]> {
     const exposures = decodeFixture(fixture);
     const result: SpectrumPoint[] = [];
     let index = 0;
@@ -45,8 +45,8 @@ namespace SkyShift {
       for (let i = 0; i < fixture.visitSizes[visit]; i++, index++) {
         if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
         const exposure = exposures[index], h = exposure.header;
-        let ra = fixture.ra0, dec = fixture.dec0;
-        if (Math.abs(ra - 133.759765) < 1e-5 && Math.abs(dec + 7.242186) < 1e-5 && h.mjd !== undefined) {
+        let ra = position?.ra ?? fixture.ra0, dec = position?.dec ?? fixture.dec0;
+        if (!position && Math.abs(ra - 133.759765) < 1e-5 && Math.abs(dec + 7.242186) < 1e-5 && h.mjd !== undefined) {
           const year = 2000 + (h.mjd - 51544.5) / 365.25;
           ra += (year - 2026) * -8123.7 / 3600000 / Math.cos(dec * Math.PI / 180);
           dec += (year - 2026) * 673.2 / 3600000;
@@ -71,8 +71,9 @@ namespace SkyShift {
         catch (error) { if (signal.aborted) throw error; continue; }
         if (!Number.isFinite(wavelength)) continue;
         const solidAngle = 37.86 * (Math.PI / 648000) ** 2;
+        const surfaceBrightness = aperture.reduce((sum, value) => sum + value - background, 0) / aperture.length;
         const flux = aperture.reduce((sum, value) => sum + value - background, 0) * solidAngle * 1e6;
-        result.push({ wavelength, bandwidth, flux, date: fixture.dates[visit], mjd: h.mjd ?? null, productKey: h.productKey ?? null });
+        result.push({ wavelength, bandwidth, flux, surfaceBrightness, date: fixture.dates[visit], mjd: h.mjd ?? null, productKey: h.productKey ?? null });
       }
     }
     return result.sort((a, b) => a.wavelength - b.wavelength);
